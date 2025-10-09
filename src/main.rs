@@ -28,9 +28,9 @@ fn get_block(base_url: &str, height: Height) -> Result<Block, Box<dyn std::error
     parse_block(&body)
 }
 
-fn should_check_height(height: u32) -> bool {
-    let remainder = height % 50;
-    remainder == 0 || remainder == 1 || remainder == 2
+fn heartbeat_blocks_for(height: u32) -> Vec<u32> {
+    let cycle_base = (height / 50) * 50;
+    vec![cycle_base, cycle_base + 1, cycle_base + 2]
 }
 
 fn process_block<'a>(
@@ -70,70 +70,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|bc| (bc.name.clone(), initial_height.saturating_sub(100)))
         .collect();
 
-    let previous_cycle_base = (initial_height / 50) * 50;
-    let heights_to_backcheck: Vec<u32> = (previous_cycle_base..=previous_cycle_base + 2)
-        .filter(|h| *h <= initial_height)
-        .collect();
-
-    println!(
-        "\nBackchecking previous heartbeat heights: {:?}",
-        heights_to_backcheck
-    );
-    for height in heights_to_backcheck {
-        match get_block(&config.rpc_url, Height::Specific(height)) {
-            Ok(block) => {
-                let matched = process_block(&block, &config)?;
-                let block_height: u32 = block.header.height.parse()?;
-                for broadcaster in matched {
-                    println!("Height {}: {} heartbeat detected", block_height, broadcaster.name);
-                    last_heartbeat.insert(broadcaster.name.clone(), block_height);
-                }
-            }
-            Err(e) => {
-                eprintln!("Error fetching height {}: {}", height, e);
-            }
-        }
-    }
-
-    println!("\nLast heartbeat status:");
-    for (name, height) in &last_heartbeat {
-        println!("  {}: {}", name, height);
-    }
-
-    let mut last_visited_height = initial_height;
+    let mut last_visited_height = 0;
 
     loop {
-        thread::sleep(Duration::from_secs(6));
-
         let latest_block = get_block(&config.rpc_url, Height::Latest)?;
         let latest_height: u32 = latest_block.header.height.parse()?;
 
-        if latest_height > last_visited_height {
-            let heights_to_check: Vec<u32> = ((last_visited_height + 1)..=latest_height)
-                .filter(|h| should_check_height(*h))
-                .collect();
+        let heights_to_check: Vec<u32> = heartbeat_blocks_for(latest_height)
+            .iter()
+            .copied()
+            .filter(|b| *b > last_visited_height)
+            .collect();
 
-            if !heights_to_check.is_empty() {
-                println!("\nChecking heights: {:?}", heights_to_check);
-            }
-
-            for height in heights_to_check {
-                match get_block(&config.rpc_url, Height::Specific(height)) {
-                    Ok(block) => {
-                        let matched = process_block(&block, &config)?;
-                        let block_height: u32 = block.header.height.parse()?;
-                        for broadcaster in matched {
-                            println!("Height {}: {} heartbeat detected", block_height, broadcaster.name);
-                            last_heartbeat.insert(broadcaster.name.clone(), block_height);
-                        }
+        println!("highest was {}", latest_height);
+        for height in heights_to_check {
+            println!("\nChecking {:?}", height);
+            match get_block(&config.rpc_url, Height::Specific(height)) {
+                Ok(block) => {
+                    let matched = process_block(&block, &config)?;
+                    let block_height: u32 = block.header.height.parse()?;
+                    for broadcaster in matched {
+                        println!(
+                            "Height {}: {} heartbeat detected",
+                            block_height, broadcaster.name
+                        );
+                        last_heartbeat.insert(broadcaster.name.clone(), block_height);
                     }
-                    Err(e) => {
-                        eprintln!("Error fetching height {}: {}", height, e);
-                    }
+                }
+                Err(e) => {
+                    eprintln!("Error fetching height {}: {}", height, e);
                 }
             }
 
-            last_visited_height = latest_height;
+            last_visited_height = height;
         }
+
+        thread::sleep(Duration::from_secs(6));
     }
 }
