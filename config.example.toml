@@ -1,0 +1,10 @@
+rpc_url = "http://localhost:26657"
+poll_interval_seconds = 6
+
+[[broadcaster]]
+name = "validator1"
+address = "0123456789abcdef0123456789abcdef01234567"
+
+[[broadcaster]]
+name = "validator2"
+address = "abcdef0123456789abcdef0123456789abcdef01"
