@@ -1,0 +1,4 @@
+/config.toml
+/target
+/src/generated/*.rs
+!/src/generated/mod.rs

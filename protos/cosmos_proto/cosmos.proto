@@ -1,0 +1,17 @@
+syntax = "proto2";
+
+package cosmos_proto;
+
+import "google/protobuf/descriptor.proto";
+
+option go_package = "github.com/cosmos/cosmos-proto;cosmos_proto";
+
+extend google.protobuf.MessageOptions {
+  optional string interface_type = 93001;
+  optional string implements_interface = 93002;
+}
+
+extend google.protobuf.FieldOptions {
+  optional string accepts_interface = 93001;
+  optional string scalar = 93002;
+}

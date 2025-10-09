@@ -1,0 +1,11 @@
+syntax = "proto3";
+package cosmos.crypto.multisig;
+
+import "gogoproto/gogo.proto";
+
+option go_package = "github.com/cosmos/cosmos-sdk/crypto/keys/multisig";
+
+message LegacyAminoPubKey {
+  uint32 threshold = 1;
+  repeated bytes public_keys = 2;
+}

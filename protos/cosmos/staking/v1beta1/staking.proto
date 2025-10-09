@@ -1,0 +1,21 @@
+syntax = "proto3";
+package cosmos.staking.v1beta1;
+
+import "gogoproto/gogo.proto";
+import "cosmos/base/v1beta1/coin.proto";
+
+option go_package = "github.com/cosmos/cosmos-sdk/x/staking/types";
+
+message Validator {
+  string operator_address = 1;
+  string consensus_pubkey = 2;
+  bool jailed = 3;
+  int32 status = 4;
+  string tokens = 5;
+  string delegator_shares = 6;
+  string description = 7;
+  int64 unbonding_height = 8;
+  string unbonding_time = 9;
+  string commission = 10;
+  string min_self_delegation = 11;
+}

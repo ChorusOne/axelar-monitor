@@ -1,0 +1,9 @@
+rpc_url = "http://host:26617"
+
+[[broadcaster]]
+name = "your identifier"
+address = "your address"
+
+[[broadcaster]]
+name = "your identifier"
+address = "your address"
