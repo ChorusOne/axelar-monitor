@@ -1,5 +1,6 @@
 rpc_url = "http://localhost:26657"
 poll_interval_seconds = 6
+metrics_port = 9090
 
 [[broadcaster]]
 name = "validator1"

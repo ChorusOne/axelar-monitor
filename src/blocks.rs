@@ -24,7 +24,6 @@ pub struct Data {
 
 #[derive(Deserialize, Debug)]
 pub struct Header {
-    pub chain_id: String,
     pub height: String,
 }
 

@@ -5,6 +5,7 @@ use std::fs;
 pub struct Config {
     pub rpc_url: String,
     pub poll_interval_seconds: u64,
+    pub metrics_port: u16,
     pub broadcaster: Vec<Broadcaster>,
 }
 

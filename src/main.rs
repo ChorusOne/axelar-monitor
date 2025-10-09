@@ -8,7 +8,9 @@ use std::time::Duration;
 mod blocks;
 mod config;
 mod generated;
+mod metrics;
 
+#[derive(Debug)]
 enum Height {
     Latest,
     Specific(u32),
@@ -25,6 +27,19 @@ enum IoResult {
     LatestFetched(u32, Block),
     BlockFetched(u32, Block),
     FetchError(Height, String),
+}
+
+#[derive(Debug)]
+struct MetricsSnapshot {
+    last_heartbeat: HashMap<String, u32>,
+    last_visited_height: u32,
+    chain_height: u32,
+    fetch_error_count: u64,
+}
+
+enum ProcessingMessage {
+    BlockResult(IoResult),
+    QueryMetrics(mpsc::Sender<MetricsSnapshot>),
 }
 
 fn get_block(base_url: &str, height: Height) -> Result<Block, Box<dyn std::error::Error>> {
@@ -50,30 +65,44 @@ fn heartbeat_blocks_for(height: u32) -> Vec<u32> {
 fn io_thread_loop(
     rpc_url: String,
     cmd_rx: mpsc::Receiver<IoCommand>,
-    result_tx: mpsc::Sender<IoResult>,
+    msg_tx: mpsc::Sender<ProcessingMessage>,
 ) {
     loop {
         match cmd_rx.recv() {
             Ok(IoCommand::FetchLatest) => match get_block(&rpc_url, Height::Latest) {
                 Ok(block) => {
-                    if let Ok(height) = block.header.height.parse::<u32>() {
-                        let _ = result_tx.send(IoResult::LatestFetched(height, block));
-                    }
+                    let height = block.header.height.parse::<u32>().unwrap();
+                    msg_tx
+                        .send(ProcessingMessage::BlockResult(IoResult::LatestFetched(
+                            height, block,
+                        )))
+                        .unwrap();
                 }
                 Err(e) => {
-                    let _ = result_tx.send(IoResult::FetchError(Height::Latest, e.to_string()));
+                    msg_tx
+                        .send(ProcessingMessage::BlockResult(IoResult::FetchError(
+                            Height::Latest,
+                            e.to_string(),
+                        )))
+                        .unwrap();
                 }
             },
             Ok(IoCommand::FetchBlock(height)) => {
                 match get_block(&rpc_url, Height::Specific(height)) {
                     Ok(block) => {
-                        let _ = result_tx.send(IoResult::BlockFetched(height, block));
+                        msg_tx
+                            .send(ProcessingMessage::BlockResult(IoResult::BlockFetched(
+                                height, block,
+                            )))
+                            .unwrap();
                     }
                     Err(e) => {
-                        let _ = result_tx.send(IoResult::FetchError(
-                            Height::Specific(height),
-                            e.to_string(),
-                        ));
+                        msg_tx
+                            .send(ProcessingMessage::BlockResult(IoResult::FetchError(
+                                Height::Specific(height),
+                                e.to_string(),
+                            )))
+                            .unwrap();
                     }
                 }
             }
@@ -106,11 +135,13 @@ fn process_block<'a>(
 }
 
 fn processing_loop(
-    result_rx: mpsc::Receiver<IoResult>,
+    msg_rx: mpsc::Receiver<ProcessingMessage>,
     cmd_tx: mpsc::Sender<IoCommand>,
     config: Config,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut last_visited_height = 0;
+    let mut chain_height = 0;
+    let mut fetch_error_count = 0u64;
     let mut last_heartbeat: HashMap<String, u32> = config
         .broadcaster
         .iter()
@@ -118,30 +149,43 @@ fn processing_loop(
         .collect();
 
     loop {
-        match result_rx.recv()? {
-            IoResult::LatestFetched(height, _block) => {
-                let heights_to_check: Vec<u32> = heartbeat_blocks_for(height)
-                    .iter()
-                    .copied()
-                    .filter(|b| *b > last_visited_height)
-                    .collect();
-                for height in &heights_to_check {
-                    cmd_tx.send(IoCommand::FetchBlock(*height))?;
+        match msg_rx.recv()? {
+            ProcessingMessage::BlockResult(result) => match result {
+                IoResult::LatestFetched(height, _block) => {
+                    chain_height = height;
+                    let heights_to_check: Vec<u32> = heartbeat_blocks_for(height)
+                        .iter()
+                        .copied()
+                        .filter(|b| *b > last_visited_height)
+                        .filter(|b| *b <= height)
+                        .collect();
+                    for height in &heights_to_check {
+                        cmd_tx.send(IoCommand::FetchBlock(*height))?;
+                    }
+                    println!("Current height = {height}")
                 }
-                println!("Current height = {height}")
-            }
-            IoResult::FetchError(_, e) => {
-                eprintln!("Error fetching latest: {}", e);
-                continue;
-            }
-            IoResult::BlockFetched(height, block) => {
-                println!("\nChecking {:?}", height);
-                let matched = process_block(&block, &config)?;
-                for broadcaster in matched {
-                    println!("Height {}: {} heartbeat detected", height, broadcaster.name);
-                    last_heartbeat.insert(broadcaster.name.clone(), height);
+                IoResult::FetchError(h, e) => {
+                    fetch_error_count += 1;
+                    eprintln!("Error fetching at height {:?}: {}", h, e);
                 }
-                last_visited_height = std::cmp::max(last_visited_height, height);
+                IoResult::BlockFetched(height, block) => {
+                    println!("\nChecking {:?}", height);
+                    let matched = process_block(&block, &config)?;
+                    for broadcaster in matched {
+                        println!("Height {}: {} heartbeat detected", height, broadcaster.name);
+                        last_heartbeat.insert(broadcaster.name.clone(), height);
+                    }
+                    last_visited_height = std::cmp::max(last_visited_height, height);
+                }
+            },
+            ProcessingMessage::QueryMetrics(response_tx) => {
+                let snapshot = MetricsSnapshot {
+                    last_heartbeat: last_heartbeat.clone(),
+                    last_visited_height,
+                    chain_height,
+                    fetch_error_count,
+                };
+                let _ = response_tx.send(snapshot);
             }
         }
     }
@@ -151,13 +195,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::load("config.toml")?;
 
     let (cmd_tx, cmd_rx) = mpsc::channel::<IoCommand>();
-    let (result_tx, result_rx) = mpsc::channel::<IoResult>();
+    let (msg_tx, msg_rx) = mpsc::channel::<ProcessingMessage>();
 
     let rpc_url = config.rpc_url.clone();
     let poll_interval = config.poll_interval_seconds;
+    let metrics_port = config.metrics_port;
 
+    let msg_tx_io = msg_tx.clone();
     thread::spawn(move || {
-        io_thread_loop(rpc_url, cmd_rx, result_tx);
+        io_thread_loop(rpc_url, cmd_rx, msg_tx_io);
     });
 
     let feeder_tx = cmd_tx.clone();
@@ -168,5 +214,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    processing_loop(result_rx, cmd_tx, config)
+    let msg_tx_metrics = msg_tx.clone();
+    thread::spawn(move || {
+        metrics::metrics_server_loop(msg_tx_metrics, metrics_port);
+    });
+
+    processing_loop(msg_rx, cmd_tx, config)
 }
