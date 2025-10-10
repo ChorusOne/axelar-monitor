@@ -80,6 +80,7 @@ struct PollVote {
 
 #[derive(Debug)]
 struct Poll {
+    poll_id: Option<u64>,
     votes: Vec<PollVote>,
     expiry_height: u64,
     chain: String,
@@ -151,6 +152,7 @@ fn io_thread_loop(
                                     .unwrap();
                             }
 
+                            // TODO ConfirmTransferKey
                             let confirm_reqs = blocks::extract_confirm_gateway_txs_requests(&txs);
                             if !confirm_reqs.is_empty() {
                                 msg_tx
@@ -229,6 +231,7 @@ fn processing_loop(
 
     let mut chain_params: HashMap<String, ChainParams> = HashMap::new();
     let mut polls: HashMap<String, Poll> = HashMap::new();
+    let mut poll_id_to_tx_id: HashMap<u64, String> = HashMap::new();
 
     loop {
         match msg_rx.recv()? {
@@ -272,7 +275,12 @@ fn processing_loop(
                             assert_eq!(req.tx_ids.len(), 1);
                             for tx_id in &req.tx_ids {
                                 let encoded_tx_id = hex::encode(tx_id);
+                                // TODO: We don't know the poll_id yet - it's assigned by the chain
+                                // when the ConfirmGatewayTxsRequest is processed. We need to either:
+                                // 1. Query the chain state to get the poll_id for this tx_id, or
+                                // 2. Wait for the first vote to come in and learn the poll_id then
                                 let poll = Poll {
+                                    poll_id: None,
                                     votes: vec![],
                                     expiry_height,
                                     chain: req.chain.clone(),
@@ -290,13 +298,25 @@ fn processing_loop(
                 }
                 IoResult::Votes(votes) => {
                     for vote in votes {
-                        if let Some(p) = polls.get_mut(&vote.tx_id) {
+                        let poll = if !vote.tx_id.is_empty() {
+                            polls.get_mut(&vote.tx_id)
+                        } else if let Some(tx_id) = poll_id_to_tx_id.get(&vote.poll_id) {
+                            polls.get_mut(tx_id)
+                        } else {
+                            None
+                        };
+
+                        if let Some(p) = poll {
                             info!("vote: {:?}", vote);
+                            if p.poll_id.is_none() {
+                                p.poll_id = Some(vote.poll_id);
+                                poll_id_to_tx_id.insert(vote.poll_id, vote.tx_id.clone());
+                            }
                             p.votes.push(vote);
                         } else {
                             warn!(
-                                "Got vote on {} and we don't know about it. It's fine if this program just started (~90s)",
-                                vote.tx_id
+                                "Got vote on tx_id={} poll_id={} and we don't know about it. It's fine if this program just started (~90s)",
+                                vote.tx_id, vote.poll_id
                             );
                         }
                     }

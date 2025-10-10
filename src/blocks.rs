@@ -144,23 +144,46 @@ pub fn get_votes_from_txs(txs: &[TxBody]) -> Vec<PollVote> {
     for vote in extract_decoded_votes(&txs) {
         let sender_id = hex::encode(&vote.sender);
         if let Some(vote_events) = &vote.vote_events {
-            for event in &vote_events.events {
-                let tx_id = hex::encode(&event.tx_id);
+            if vote_events.events.is_empty() {
                 let v = PollVote {
                     poll_id: vote.poll_id,
                     chain: vote_events.chain.clone(),
-                    tx_id: tx_id,
+                    tx_id: String::new(),
                     sender_id: sender_id.clone(),
-                    payload_hash: match &event.event {
-                        Some(Event::ContractCall(c)) => Some(hex::encode(&c.payload_hash)),
-                        Some(Event::ContractCallWithToken(c)) => Some(hex::encode(&c.payload_hash)),
-                        Some(Event::MultisigOperatorshipTransferred(_)) => None, // TODO
-                        Some(u) => panic!("Unsupported event {u:?}"),
-                        None => None,
-                    },
+                    payload_hash: None,
                 };
                 ret.push(v);
+            } else {
+                for event in &vote_events.events {
+                    let tx_id = hex::encode(&event.tx_id);
+                    let v = PollVote {
+                        poll_id: vote.poll_id,
+                        chain: vote_events.chain.clone(),
+                        tx_id: tx_id,
+                        sender_id: sender_id.clone(),
+                        payload_hash: match &event.event {
+                            Some(Event::ContractCall(c)) => Some(hex::encode(&c.payload_hash)),
+                            Some(Event::ContractCallWithToken(c)) => {
+                                Some(hex::encode(&c.payload_hash))
+                            }
+                            Some(Event::MultisigOperatorshipTransferred(_)) => None,
+                            Some(u) => panic!("Unsupported event {u:?}"),
+                            None => None,
+                        },
+                    };
+                    ret.push(v);
+                }
             }
+        } else {
+            println!("no events??");
+            let v = PollVote {
+                poll_id: vote.poll_id,
+                chain: String::new(),
+                tx_id: String::new(),
+                sender_id: sender_id.clone(),
+                payload_hash: None,
+            };
+            ret.push(v);
         }
     }
     ret
