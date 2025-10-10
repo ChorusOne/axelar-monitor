@@ -1,11 +1,15 @@
 use crate::blocks::{Block, parse_block};
 use crate::config::{Broadcaster, Config};
+
 use cosmos_sdk_proto::cosmos::tx::v1beta1::TxBody;
 use serde::Deserialize;
+use simple_logger::SimpleLogger;
 use std::collections::HashMap;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
+
+use log::{debug, error, info};
 
 mod blocks;
 mod config;
@@ -20,6 +24,7 @@ enum Height {
 
 enum IoCommand {
     FetchBlock(Height),
+    FetchChainList,
     FetchChainParams(String),
     #[allow(dead_code)]
     Shutdown,
@@ -28,6 +33,7 @@ enum IoCommand {
 enum IoResult {
     BlockFetched(u64, Block),
     FetchError(Height, String),
+    ChainList(Vec<String>),
     ChainParams(ChainParams),
 }
 
@@ -42,6 +48,11 @@ enum ProcessingMessage {
     IoResult(IoResult),
     QueryMetrics(mpsc::Sender<MetricsSnapshot>),
     Shutdown,
+}
+
+#[derive(Deserialize, Debug)]
+struct ChainListResponse {
+    chains: Vec<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -87,6 +98,14 @@ fn get_block(base_url: &str, height: Height) -> Result<(Block, u64), Box<dyn std
     Ok((b, h))
 }
 
+fn get_chain_list(base_url: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let url = format!("{}/axelar/evm/v1beta1/chains", base_url);
+    let mut response = ureq::get(&url).call()?;
+    let body = response.body_mut().read_to_string()?;
+    let parsed: ChainListResponse = serde_json::from_str(&body)?;
+    Ok(parsed.chains)
+}
+
 fn get_chain_params(
     base_url: &str,
     chain: &str,
@@ -96,11 +115,6 @@ fn get_chain_params(
     let body = response.body_mut().read_to_string()?;
     let parsed: ChainParamsResponse = serde_json::from_str(&body)?;
     Ok(parsed.params)
-}
-
-fn heartbeat_blocks_for(height: u64) -> Vec<u64> {
-    let cycle_base = (height / 50) * 50;
-    vec![cycle_base, cycle_base + 1, cycle_base + 2]
 }
 
 fn io_thread_loop(
@@ -127,25 +141,35 @@ fn io_thread_loop(
                         .unwrap();
                 }
             },
+            Ok(IoCommand::FetchChainList) => match get_chain_list(&rpc_url) {
+                Ok(chains) => {
+                    info!("fetched chain list: {} chains", chains.len());
+                    msg_tx
+                        .send(ProcessingMessage::IoResult(IoResult::ChainList(chains)))
+                        .unwrap();
+                }
+                Err(e) => {
+                    error!("Failed to fetch chain list: {}", e);
+                }
+            },
             Ok(IoCommand::Shutdown) => {
                 msg_tx.send(ProcessingMessage::Shutdown).unwrap();
                 break;
             }
             Ok(IoCommand::FetchChainParams(chain)) => match get_chain_params(&rpc_url, &chain) {
                 Ok(params) => {
-                    println!("fetched chain params for {chain}");
                     msg_tx
                         .send(ProcessingMessage::IoResult(IoResult::ChainParams(params)))
                         .unwrap();
                 }
                 Err(e) => {
-                    eprintln!("Failed to fetch params for chain {}: {}", &chain, e);
+                    error!("Failed to fetch params for chain {}: {}", &chain, e);
                 }
             },
             Err(_) => break,
         }
     }
-    println!("exiting io thread loop");
+    info!("exiting io thread loop");
 }
 
 fn heartbeats_from_our_broadcasters<'a>(
@@ -182,7 +206,7 @@ fn processing_loop(
         .map(|bc| (bc.name.clone(), 0))
         .collect();
 
-    let mut chain_params_cache: HashMap<String, ChainParams> = HashMap::new();
+    let mut chain_params: HashMap<String, ChainParams> = HashMap::new();
     let mut polls: HashMap<String, Poll> = HashMap::new();
 
     loop {
@@ -190,43 +214,51 @@ fn processing_loop(
             ProcessingMessage::IoResult(result) => match result {
                 IoResult::FetchError(h, e) => {
                     fetch_error_count += 1;
-                    eprintln!("Error fetching at height {:?}: {}", h, e);
+                    error!("Error fetching at height {:?}: {}", h, e);
+                }
+                IoResult::ChainList(chains) => {
+                    info!(
+                        "Chain list received, fetching params for {} chains",
+                        chains.len()
+                    );
+                    for chain in chains {
+                        cmd_tx.send(IoCommand::FetchChainParams(chain)).unwrap();
+                    }
                 }
                 // TODO should split here to Heartbeat / NewPoll / Vote
                 IoResult::BlockFetched(height, block) => {
                     chain_height = std::cmp::max(chain_height, height);
-                    println!("\nChecking {:?}", height);
+                    info!("Checking {:?}", height);
                     let txs = blocks::get_txs(&block)?;
                     for broadcaster in heartbeats_from_our_broadcasters(&txs, &config) {
-                        println!("Height {}: {} heartbeat detected", height, broadcaster.name);
+                        info!("Height {}: {} heartbeat detected", height, broadcaster.name);
                         last_heartbeat.insert(broadcaster.name.clone(), height);
                     }
 
-                    println!("checking tx");
                     let confirm_reqs = blocks::extract_confirm_gateway_txs_requests(&txs);
                     for req in &confirm_reqs {
-                        println!("ConfirmGatewayTxsRequest:");
-                        let revote_period = if let Some(params) = chain_params_cache.get(&req.chain)
-                        {
-                            params.revote_locking_period.parse::<u64>().unwrap()
+                        if let Some(params) = chain_params.get(&req.chain.to_lowercase()) {
+                            let revote_period =
+                                params.revote_locking_period.parse::<u64>().unwrap();
+                            let expiry_height = height as u64 + revote_period;
+                            // does it make sense to create multiple polls for the same chain?
+                            // i don't know how to handle it
+                            assert_eq!(req.tx_ids.len(), 1);
+                            for tx_id in &req.tx_ids {
+                                let encoded_tx_id = hex::encode(tx_id);
+                                let poll = Poll {
+                                    votes: vec![],
+                                    expiry_height,
+                                    chain: req.chain.clone(),
+                                };
+                                info!("New poll: {encoded_tx_id} {poll:?}");
+                                polls.insert(encoded_tx_id, poll);
+                            }
                         } else {
-                            cmd_tx
-                                .send(IoCommand::FetchChainParams(req.chain.clone()))
-                                .unwrap();
-                            20 // TODO config
-                        };
-                        let expiry_height = height as u64 + revote_period;
-                        // not sure, but it doesn't make sense to be != 1
-                        assert_eq!(req.tx_ids.len(), 1);
-                        for tx_id in &req.tx_ids {
-                            let encoded_tx_id = hex::encode(tx_id);
-                            let poll = Poll {
-                                votes: vec![],
-                                expiry_height,
-                                chain: req.chain.clone(),
-                            };
-                            println!("New poll: {encoded_tx_id} {poll:?}");
-                            polls.insert(encoded_tx_id, poll);
+                            error!(
+                                "Chain params not available for chain: {}. Skipping poll creation.",
+                                req.chain
+                            );
                         }
                     }
 
@@ -242,11 +274,11 @@ fn processing_loop(
                     }
 
                     polls.retain(|_, v| v.expiry_height > height as u64);
-                    println!("open polls after pruning {}", polls.len());
+                    debug!("open polls after pruning {}", polls.len());
                 }
                 IoResult::ChainParams(chain) => {
-                    println!("got chain params {:?}", chain);
-                    chain_params_cache.insert(chain.chain.clone(), chain);
+                    info!("got chain params {:?}", chain);
+                    chain_params.insert(chain.chain.to_lowercase(), chain);
                 }
             },
             ProcessingMessage::QueryMetrics(response_tx) => {
@@ -260,11 +292,12 @@ fn processing_loop(
             ProcessingMessage::Shutdown => break,
         }
     }
-    println!("processing loop done");
+    info!("processing loop done");
     Ok(())
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    simple_logger::init_with_level(log::Level::Info).unwrap();
     let config = Config::load("config.toml")?;
 
     let (cmd_tx, cmd_rx) = mpsc::channel::<IoCommand>();
@@ -281,6 +314,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let feeder_tx = cmd_tx.clone();
 
+    cmd_tx.send(IoCommand::FetchChainList).unwrap();
+
     let args: Vec<String> = std::env::args().collect();
     let single_block = if args.len() > 1 {
         args[1].parse::<u64>().ok()
@@ -289,14 +324,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     if let Some(height) = single_block {
-        feeder_tx
-            .send(IoCommand::FetchBlock(Height::Specific(height)))
-            .unwrap();
-        feeder_tx
-            .send(IoCommand::FetchBlock(Height::Specific(height + 1)))
-            .unwrap();
         thread::spawn(move || {
             std::thread::sleep(Duration::from_secs(1));
+            feeder_tx
+                .send(IoCommand::FetchBlock(Height::Specific(height)))
+                .unwrap();
+            feeder_tx
+                .send(IoCommand::FetchBlock(Height::Specific(height + 1)))
+                .unwrap();
             feeder_tx.send(IoCommand::Shutdown).unwrap();
         });
     } else {
