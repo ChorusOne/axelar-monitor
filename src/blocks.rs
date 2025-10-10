@@ -147,6 +147,8 @@ pub fn get_votes_from_txs(txs: &[TxBody]) -> Vec<PollVote> {
             for event in &vote_events.events {
                 let tx_id = hex::encode(&event.tx_id);
                 let v = PollVote {
+                    poll_id: vote.poll_id,
+                    chain: vote_events.chain.clone(),
                     tx_id: tx_id,
                     sender_id: sender_id.clone(),
                     payload_hash: match &event.event {

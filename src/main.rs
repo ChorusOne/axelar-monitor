@@ -71,6 +71,8 @@ struct ChainParams {
 
 #[derive(Debug)]
 struct PollVote {
+    poll_id: u64,
+    chain: String,
     tx_id: String,
     sender_id: String,
     payload_hash: Option<String>,
@@ -289,7 +291,7 @@ fn processing_loop(
                 IoResult::Votes(votes) => {
                     for vote in votes {
                         if let Some(p) = polls.get_mut(&vote.tx_id) {
-                            info!("vote on poll {}: {:?}", vote.tx_id, p);
+                            info!("vote: {:?}", vote);
                             p.votes.push(vote);
                         } else {
                             warn!(
