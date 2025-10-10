@@ -3,8 +3,10 @@ use cosmos_sdk_proto::cosmos::tx::v1beta1::{Tx, TxBody};
 use prost::Message;
 use serde::Deserialize;
 
+use crate::generated::axelar::evm::v1beta1::{ConfirmGatewayTxsRequest, VoteEvents};
 use crate::generated::axelar::reward::v1beta1::RefundMsgRequest;
 use crate::generated::axelar::tss::v1beta1::HeartBeatRequest;
+use crate::generated::axelar::vote::v1beta1::VoteRequest;
 
 #[derive(Deserialize, Debug)]
 struct Response {
@@ -27,6 +29,49 @@ pub struct Header {
     pub height: String,
 }
 
+pub struct DecodedVote {
+    pub sender: Vec<u8>,
+    pub poll_id: u64,
+    pub vote_events: Option<VoteEvents>,
+}
+
+pub fn extract_decoded_votes(txs: &[TxBody]) -> Vec<DecodedVote> {
+    txs.iter()
+        .map(|tx| extract_decoded_votes_from_tx(tx))
+        .flatten()
+        .collect()
+}
+
+fn extract_decoded_votes_from_tx(tx: &TxBody) -> Vec<DecodedVote> {
+    let vote_requests = extract_vote_requests(tx);
+    vote_requests
+        .into_iter()
+        .map(|vote| {
+            let vote_events = vote.vote.as_ref().and_then(|vote_data| {
+                if vote_data.type_url == "/axelar.evm.v1beta1.VoteEvents" {
+                    VoteEvents::decode(&vote_data.value[..]).ok()
+                } else {
+                    None
+                }
+            });
+
+            DecodedVote {
+                sender: vote.sender,
+                poll_id: vote.poll_id,
+                vote_events,
+            }
+        })
+        .collect()
+}
+
+pub fn extract_vote_requests(tx: &TxBody) -> Vec<VoteRequest> {
+    let refund_messages = extract_refund_messages(tx);
+    refund_messages
+        .iter()
+        .filter_map(|rm| extract_vote_request(rm))
+        .collect()
+}
+
 pub fn extract_heartbeat_requests(tx: &TxBody) -> Vec<HeartBeatRequest> {
     let refund_messages = extract_refund_messages(tx);
     let heartbeat_messages: Vec<HeartBeatRequest> = refund_messages
@@ -41,6 +86,44 @@ fn extract_refund_messages(tx_body: &TxBody) -> Vec<&cosmos_sdk_proto::Any> {
         .iter()
         .filter(|msg| msg.type_url == "/axelar.reward.v1beta1.RefundMsgRequest")
         .collect()
+}
+
+pub fn print_all_refund_inner_message_types(tx: &TxBody) {
+    let refund_messages = extract_refund_messages(tx);
+    for refund_msg in refund_messages {
+        if let Ok(refund) = RefundMsgRequest::decode(&refund_msg.value[..]) {
+            if let Some(inner) = refund.inner_message {
+                println!(
+                    "  RefundMsgRequest.inner_message.type_url: {}",
+                    inner.type_url
+                );
+            }
+        }
+    }
+}
+
+pub fn extract_confirm_gateway_txs_requests(txs: &[TxBody]) -> Vec<ConfirmGatewayTxsRequest> {
+    txs.iter()
+        .map(|tx| {
+            tx.messages
+                .iter()
+                .filter(|msg| msg.type_url == "/axelar.evm.v1beta1.ConfirmGatewayTxsRequest")
+                .filter_map(|msg| ConfirmGatewayTxsRequest::decode(&msg.value[..]).ok())
+                .collect::<Vec<ConfirmGatewayTxsRequest>>()
+        })
+        .flatten()
+        .collect()
+}
+
+fn extract_vote_request(refund_msg: &cosmos_sdk_proto::Any) -> Option<VoteRequest> {
+    let refund = RefundMsgRequest::decode(&refund_msg.value[..]).ok()?;
+    let inner = refund.inner_message?;
+
+    if inner.type_url != "/axelar.vote.v1beta1.VoteRequest" {
+        return None;
+    }
+
+    VoteRequest::decode(&inner.value[..]).ok()
 }
 
 fn extract_heartbeat_request(refund_msg: &cosmos_sdk_proto::Any) -> Option<HeartBeatRequest> {

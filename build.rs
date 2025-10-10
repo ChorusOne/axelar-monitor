@@ -5,6 +5,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "protos/axelar/reward/v1beta1/tx.proto",
         "protos/axelar/permission/exported/v1beta1/types.proto",
         "protos/axelar/tss/v1beta1/tx.proto",
+        "protos/axelar/evm/v1beta1/tx.proto",
+        "protos/axelar/evm/v1beta1/types.proto",
+        "protos/axelar/vote/v1beta1/tx.proto",
     ];
 
     let proto_includes = vec![

@@ -1,6 +1,11 @@
 #![allow(dead_code)]
 
 pub mod axelar {
+    pub mod evm {
+        pub mod v1beta1 {
+            include!("axelar.evm.v1beta1.rs");
+        }
+    }
     pub mod reward {
         pub mod v1beta1 {
             include!("axelar.reward.v1beta1.rs");
@@ -29,6 +34,9 @@ pub mod axelar {
         }
     }
     pub mod vote {
+        pub mod v1beta1 {
+            include!("axelar.vote.v1beta1.rs");
+        }
         pub mod exported {
             pub mod v1beta1 {
                 include!("axelar.vote.exported.v1beta1.rs");
