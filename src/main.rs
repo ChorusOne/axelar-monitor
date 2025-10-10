@@ -1,14 +1,14 @@
-use crate::blocks::{Block, parse_block};
-use crate::config::{Broadcaster, Config};
+use crate::generated::axelar::evm::v1beta1::ConfirmGatewayTxsRequest;
 
-use cosmos_sdk_proto::cosmos::tx::v1beta1::TxBody;
+use crate::blocks::{Block, parse_block};
+use crate::config::Config;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 
 mod blocks;
 mod config;
@@ -30,7 +30,10 @@ enum IoCommand {
 }
 
 enum IoResult {
-    BlockFetched(u64, Block),
+    Block(u64),
+    Heartbeats(u64, Vec<String>),
+    NewPolls(u64, Vec<ConfirmGatewayTxsRequest>),
+    Votes(Vec<PollVote>),
     FetchError(Height, String),
     ChainList(Vec<String>),
     ChainParams(ChainParams),
@@ -126,11 +129,49 @@ fn io_thread_loop(
             Ok(IoCommand::FetchBlock(height)) => match get_block(&rpc_url, height) {
                 Ok((block, height)) => {
                     msg_tx
-                        .send(ProcessingMessage::IoResult(IoResult::BlockFetched(
-                            height, block,
-                        )))
+                        .send(ProcessingMessage::IoResult(IoResult::Block(height)))
                         .unwrap();
+
+                    match blocks::get_txs(&block) {
+                        Ok(txs) => {
+                            let heartbeat_addrs: Vec<String> = txs
+                                .iter()
+                                .flat_map(|tx| blocks::extract_heartbeat_requests(tx))
+                                .map(|hb| hex::encode(&hb.sender))
+                                .collect();
+
+                            if !heartbeat_addrs.is_empty() {
+                                msg_tx
+                                    .send(ProcessingMessage::IoResult(IoResult::Heartbeats(
+                                        height,
+                                        heartbeat_addrs,
+                                    )))
+                                    .unwrap();
+                            }
+
+                            let confirm_reqs = blocks::extract_confirm_gateway_txs_requests(&txs);
+                            if !confirm_reqs.is_empty() {
+                                msg_tx
+                                    .send(ProcessingMessage::IoResult(IoResult::NewPolls(
+                                        height,
+                                        confirm_reqs,
+                                    )))
+                                    .unwrap();
+                            }
+
+                            let votes = blocks::get_votes_from_txs(&txs);
+                            if !votes.is_empty() {
+                                msg_tx
+                                    .send(ProcessingMessage::IoResult(IoResult::Votes(votes)))
+                                    .unwrap();
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to parse txs at height {}: {}", height, e);
+                        }
+                    }
                 }
+
                 Err(e) => {
                     msg_tx
                         .send(ProcessingMessage::IoResult(IoResult::FetchError(
@@ -171,27 +212,6 @@ fn io_thread_loop(
     info!("exiting io thread loop");
 }
 
-fn heartbeats_from_our_broadcasters<'a>(
-    txs: &[TxBody],
-    config: &'a Config,
-) -> Vec<&'a Broadcaster> {
-    let mut ret = Vec::with_capacity(config.broadcaster.len());
-
-    for txbody in txs {
-        let heartbeat_messages = blocks::extract_heartbeat_requests(&txbody);
-        for hb in heartbeat_messages {
-            let encoded_addr = hex::encode(&hb.sender);
-            for bc in &config.broadcaster {
-                if bc.address == encoded_addr {
-                    ret.push(bc);
-                    break;
-                }
-            }
-        }
-    }
-    ret
-}
-
 fn processing_loop(
     msg_rx: mpsc::Receiver<ProcessingMessage>,
     cmd_tx: mpsc::Sender<IoCommand>,
@@ -224,24 +244,29 @@ fn processing_loop(
                         cmd_tx.send(IoCommand::FetchChainParams(chain)).unwrap();
                     }
                 }
-                // TODO should split here to Heartbeat / NewPoll / Vote
-                IoResult::BlockFetched(height, block) => {
+                IoResult::Block(height) => {
                     chain_height = std::cmp::max(chain_height, height);
-                    info!("Checking {:?}", height);
-                    let txs = blocks::get_txs(&block)?;
-                    for broadcaster in heartbeats_from_our_broadcasters(&txs, &config) {
-                        info!("Height {}: {} heartbeat detected", height, broadcaster.name);
-                        last_heartbeat.insert(broadcaster.name.clone(), height);
+                    info!("at height {chain_height}");
+                    polls.retain(|_, v| v.expiry_height > height as u64);
+                    debug!("open polls after pruning {}", polls.len());
+                }
+                IoResult::Heartbeats(height, addresses) => {
+                    for addr in addresses {
+                        for bc in &config.broadcaster {
+                            if bc.address == addr {
+                                info!("Height {}: {} heartbeat detected", height, bc.name);
+                                last_heartbeat.insert(bc.name.clone(), height);
+                                break;
+                            }
+                        }
                     }
-
-                    let confirm_reqs = blocks::extract_confirm_gateway_txs_requests(&txs);
+                }
+                IoResult::NewPolls(height, confirm_reqs) => {
                     for req in &confirm_reqs {
                         if let Some(params) = chain_params.get(&req.chain.to_lowercase()) {
                             let revote_period =
                                 params.revote_locking_period.parse::<u64>().unwrap();
                             let expiry_height = height as u64 + revote_period;
-                            // does it make sense to create multiple polls for the same chain?
-                            // i don't know how to handle it
                             assert_eq!(req.tx_ids.len(), 1);
                             for tx_id in &req.tx_ids {
                                 let encoded_tx_id = hex::encode(tx_id);
@@ -260,20 +285,19 @@ fn processing_loop(
                             );
                         }
                     }
-
-                    /*
-                    for tx in &txs {
-                        blocks::print_all_refund_inner_message_types(&tx);
-                    }
-                    */
-                    for vote in blocks::get_votes_from_txs(&txs) {
+                }
+                IoResult::Votes(votes) => {
+                    for vote in votes {
                         if let Some(p) = polls.get_mut(&vote.tx_id) {
+                            info!("vote on poll {}: {:?}", vote.tx_id, p);
                             p.votes.push(vote);
+                        } else {
+                            warn!(
+                                "Got vote on {} and we don't know about it. It's fine if this program just started (~90s)",
+                                vote.tx_id
+                            );
                         }
                     }
-
-                    polls.retain(|_, v| v.expiry_height > height as u64);
-                    debug!("open polls after pruning {}", polls.len());
                 }
                 IoResult::ChainParams(chain) => {
                     info!("got chain params {:?}", chain);
