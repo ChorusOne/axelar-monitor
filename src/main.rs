@@ -3,7 +3,6 @@ use crate::config::{Broadcaster, Config};
 
 use cosmos_sdk_proto::cosmos::tx::v1beta1::TxBody;
 use serde::Deserialize;
-use simple_logger::SimpleLogger;
 use std::collections::HashMap;
 use std::sync::mpsc;
 use std::thread;
