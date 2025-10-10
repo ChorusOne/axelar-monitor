@@ -1,6 +1,5 @@
 use crate::blocks::{Block, parse_block};
 use crate::config::{Broadcaster, Config};
-use crate::generated::axelar::evm::v1beta1::event::Event;
 use cosmos_sdk_proto::cosmos::tx::v1beta1::TxBody;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -13,32 +12,29 @@ mod config;
 mod generated;
 mod metrics;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 enum Height {
     Latest,
-    Specific(u32),
+    Specific(u64),
 }
 
 enum IoCommand {
-    FetchLatest,
-    FetchBlock(u32),
+    FetchBlock(Height),
     FetchChainParams(String),
     #[allow(dead_code)]
     Shutdown,
 }
 
 enum IoResult {
-    LatestFetched(u32, Block),
-    BlockFetched(u32, Block),
+    BlockFetched(u64, Block),
     FetchError(Height, String),
     ChainParams(ChainParams),
 }
 
 #[derive(Debug)]
 struct MetricsSnapshot {
-    last_heartbeat: HashMap<String, u32>,
-    last_visited_height: u32,
-    chain_height: u32,
+    last_heartbeat: HashMap<String, u64>,
+    chain_height: u64,
     fetch_error_count: u64,
 }
 
@@ -62,6 +58,7 @@ struct ChainParams {
 
 #[derive(Debug)]
 struct PollVote {
+    tx_id: String,
     sender_id: String,
     payload_hash: Option<String>,
 }
@@ -73,7 +70,7 @@ struct Poll {
     chain: String,
 }
 
-fn get_block(base_url: &str, height: Height) -> Result<Block, Box<dyn std::error::Error>> {
+fn get_block(base_url: &str, height: Height) -> Result<(Block, u64), Box<dyn std::error::Error>> {
     let height_str = match height {
         Height::Latest => "latest".into(),
         Height::Specific(n) => n.to_string(),
@@ -85,7 +82,9 @@ fn get_block(base_url: &str, height: Height) -> Result<Block, Box<dyn std::error
 
     let mut response = ureq::get(&url).call()?;
     let body = response.body_mut().read_to_string()?;
-    parse_block(&body)
+    let b = parse_block(&body)?;
+    let h = b.header.height.parse()?;
+    Ok((b, h))
 }
 
 fn get_chain_params(
@@ -99,7 +98,7 @@ fn get_chain_params(
     Ok(parsed.params)
 }
 
-fn heartbeat_blocks_for(height: u32) -> Vec<u32> {
+fn heartbeat_blocks_for(height: u64) -> Vec<u64> {
     let cycle_base = (height / 50) * 50;
     vec![cycle_base, cycle_base + 1, cycle_base + 2]
 }
@@ -111,11 +110,10 @@ fn io_thread_loop(
 ) {
     loop {
         match cmd_rx.recv() {
-            Ok(IoCommand::FetchLatest) => match get_block(&rpc_url, Height::Latest) {
-                Ok(block) => {
-                    let height = block.header.height.parse::<u32>().unwrap();
+            Ok(IoCommand::FetchBlock(height)) => match get_block(&rpc_url, height) {
+                Ok((block, height)) => {
                     msg_tx
-                        .send(ProcessingMessage::IoResult(IoResult::LatestFetched(
+                        .send(ProcessingMessage::IoResult(IoResult::BlockFetched(
                             height, block,
                         )))
                         .unwrap();
@@ -123,31 +121,12 @@ fn io_thread_loop(
                 Err(e) => {
                     msg_tx
                         .send(ProcessingMessage::IoResult(IoResult::FetchError(
-                            Height::Latest,
+                            height,
                             e.to_string(),
                         )))
                         .unwrap();
                 }
             },
-            Ok(IoCommand::FetchBlock(height)) => {
-                match get_block(&rpc_url, Height::Specific(height)) {
-                    Ok(block) => {
-                        msg_tx
-                            .send(ProcessingMessage::IoResult(IoResult::BlockFetched(
-                                height, block,
-                            )))
-                            .unwrap();
-                    }
-                    Err(e) => {
-                        msg_tx
-                            .send(ProcessingMessage::IoResult(IoResult::FetchError(
-                                Height::Specific(height),
-                                e.to_string(),
-                            )))
-                            .unwrap();
-                    }
-                }
-            }
             Ok(IoCommand::Shutdown) => {
                 msg_tx.send(ProcessingMessage::Shutdown).unwrap();
                 break;
@@ -195,10 +174,9 @@ fn processing_loop(
     cmd_tx: mpsc::Sender<IoCommand>,
     config: Config,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut last_visited_height = 0;
     let mut chain_height = 0;
     let mut fetch_error_count = 0u64;
-    let mut last_heartbeat: HashMap<String, u32> = config
+    let mut last_heartbeat: HashMap<String, u64> = config
         .broadcaster
         .iter()
         .map(|bc| (bc.name.clone(), 0))
@@ -210,33 +188,19 @@ fn processing_loop(
     loop {
         match msg_rx.recv()? {
             ProcessingMessage::IoResult(result) => match result {
-                IoResult::LatestFetched(height, _block) => {
-                    chain_height = height;
-                    let heights_to_check: Vec<u32> = heartbeat_blocks_for(height)
-                        .iter()
-                        .copied()
-                        .filter(|b| *b > last_visited_height)
-                        .filter(|b| *b <= height)
-                        .collect();
-                    for height in &heights_to_check {
-                        cmd_tx.send(IoCommand::FetchBlock(*height))?;
-                    }
-
-                    println!("Current height = {height}")
-                }
                 IoResult::FetchError(h, e) => {
                     fetch_error_count += 1;
                     eprintln!("Error fetching at height {:?}: {}", h, e);
                 }
                 // TODO should split here to Heartbeat / NewPoll / Vote
                 IoResult::BlockFetched(height, block) => {
+                    chain_height = std::cmp::max(chain_height, height);
                     println!("\nChecking {:?}", height);
                     let txs = blocks::get_txs(&block)?;
                     for broadcaster in heartbeats_from_our_broadcasters(&txs, &config) {
                         println!("Height {}: {} heartbeat detected", height, broadcaster.name);
                         last_heartbeat.insert(broadcaster.name.clone(), height);
                     }
-                    last_visited_height = std::cmp::max(last_visited_height, height);
 
                     println!("checking tx");
                     let confirm_reqs = blocks::extract_confirm_gateway_txs_requests(&txs);
@@ -252,8 +216,8 @@ fn processing_loop(
                             20 // TODO config
                         };
                         let expiry_height = height as u64 + revote_period;
-                        assert_eq!(req.tx_ids.len(), 1); // not sure, but it doesn't make sense to
-                        // be != 1
+                        // not sure, but it doesn't make sense to be != 1
+                        assert_eq!(req.tx_ids.len(), 1);
                         for tx_id in &req.tx_ids {
                             let encoded_tx_id = hex::encode(tx_id);
                             let poll = Poll {
@@ -266,44 +230,19 @@ fn processing_loop(
                         }
                     }
 
+                    /*
                     for tx in &txs {
-                        // blocks::print_all_refund_inner_message_types(&tx);
+                        blocks::print_all_refund_inner_message_types(&tx);
                     }
-
-                    for vote in blocks::extract_decoded_votes(&txs) {
-                        let sender_id = hex::encode(&vote.sender);
-                        println!("Vote:");
-                        println!("  poll_id: {}", vote.poll_id);
-                        println!("  voter: {}", sender_id);
-
-                        if let Some(vote_events) = &vote.vote_events {
-                            println!("  chain: {}", vote_events.chain);
-                            println!("  events ({}):", vote_events.events.len());
-                            for event in &vote_events.events {
-                                let tx_id = hex::encode(&event.tx_id);
-                                println!("    tx_id: {}", tx_id);
-                                println!("      index: {}", event.index);
-                                println!("      status: {}", event.status);
-                                if let Some(evt) = &event.event {
-                                    println!("      event: {:?}", evt);
-                                }
-                                if let Some(p) = polls.get_mut(&tx_id) {
-                                    let v = PollVote {
-                                        sender_id: sender_id.clone(),
-                                        payload_hash: event.event.clone().map(|e| match e {
-                                            Event::ContractCallWithToken(c) => {
-                                                hex::encode(&c.payload_hash)
-                                            }
-                                            _ => panic!("Unsupported event {e:?}"),
-                                        }),
-                                    };
-                                    println!("found poll to store vote {v:?}");
-                                    p.votes.push(v);
-                                }
-                            }
+                    */
+                    for vote in blocks::get_votes_from_txs(&txs) {
+                        if let Some(p) = polls.get_mut(&vote.tx_id) {
+                            p.votes.push(vote);
                         }
                     }
-                    println!("done checking tx");
+
+                    polls.retain(|_, v| v.expiry_height > height as u64);
+                    println!("open polls after pruning {}", polls.len());
                 }
                 IoResult::ChainParams(chain) => {
                     println!("got chain params {:?}", chain);
@@ -313,7 +252,6 @@ fn processing_loop(
             ProcessingMessage::QueryMetrics(response_tx) => {
                 let snapshot = MetricsSnapshot {
                     last_heartbeat: last_heartbeat.clone(),
-                    last_visited_height,
                     chain_height,
                     fetch_error_count,
                 };
@@ -345,23 +283,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
     let single_block = if args.len() > 1 {
-        args[1].parse::<u32>().ok()
+        args[1].parse::<u64>().ok()
     } else {
         None
     };
 
     if let Some(height) = single_block {
-        feeder_tx.send(IoCommand::FetchBlock(height)).unwrap();
-        feeder_tx.send(IoCommand::FetchBlock(height + 1)).unwrap();
+        feeder_tx
+            .send(IoCommand::FetchBlock(Height::Specific(height)))
+            .unwrap();
+        feeder_tx
+            .send(IoCommand::FetchBlock(Height::Specific(height + 1)))
+            .unwrap();
         thread::spawn(move || {
             std::thread::sleep(Duration::from_secs(1));
             feeder_tx.send(IoCommand::Shutdown).unwrap();
         });
-        //msg_tx.send(ProcessingMessage::Shutdown).unwrap();
     } else {
         thread::spawn(move || {
             loop {
-                feeder_tx.send(IoCommand::FetchLatest).unwrap();
+                feeder_tx
+                    .send(IoCommand::FetchBlock(Height::Latest))
+                    .unwrap();
                 thread::sleep(Duration::from_secs(poll_interval));
             }
         });

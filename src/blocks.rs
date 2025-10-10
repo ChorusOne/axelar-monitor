@@ -3,6 +3,8 @@ use cosmos_sdk_proto::cosmos::tx::v1beta1::{Tx, TxBody};
 use prost::Message;
 use serde::Deserialize;
 
+use crate::PollVote;
+use crate::generated::axelar::evm::v1beta1::event::Event;
 use crate::generated::axelar::evm::v1beta1::{ConfirmGatewayTxsRequest, VoteEvents};
 use crate::generated::axelar::reward::v1beta1::RefundMsgRequest;
 use crate::generated::axelar::tss::v1beta1::HeartBeatRequest;
@@ -137,6 +139,30 @@ fn extract_heartbeat_request(refund_msg: &cosmos_sdk_proto::Any) -> Option<Heart
     HeartBeatRequest::decode(&inner.value[..]).ok()
 }
 
+pub fn get_votes_from_txs(txs: &[TxBody]) -> Vec<PollVote> {
+    let mut ret: Vec<_> = vec![];
+    for vote in extract_decoded_votes(&txs) {
+        let sender_id = hex::encode(&vote.sender);
+        if let Some(vote_events) = &vote.vote_events {
+            for event in &vote_events.events {
+                let tx_id = hex::encode(&event.tx_id);
+                let v = PollVote {
+                    tx_id: tx_id,
+                    sender_id: sender_id.clone(),
+                    payload_hash: match &event.event {
+                        Some(Event::ContractCall(c)) => Some(hex::encode(&c.payload_hash)),
+                        Some(Event::ContractCallWithToken(c)) => Some(hex::encode(&c.payload_hash)),
+                        Some(Event::MultisigOperatorshipTransferred(_)) => None, // TODO
+                        Some(u) => panic!("Unsupported event {u:?}"),
+                        None => None,
+                    },
+                };
+                ret.push(v);
+            }
+        }
+    }
+    ret
+}
 pub fn parse_block(json_data: &str) -> Result<Block, Box<dyn std::error::Error>> {
     let data: Response = serde_json::from_str(json_data)?;
     Ok(data.block)

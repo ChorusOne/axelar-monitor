@@ -31,13 +31,6 @@ pub fn metrics_server_loop(msg_tx: mpsc::Sender<ProcessingMessage>, port: u16) {
                     ));
                 }
 
-                metrics.push_str("# HELP chain_last_visited_height Last block height checked\n");
-                metrics.push_str("# TYPE chain_last_visited_height gauge\n");
-                metrics.push_str(&format!(
-                    "chain_last_visited_height {}\n",
-                    snapshot.last_visited_height
-                ));
-
                 metrics.push_str("# HELP chain_height Current chain height\n");
                 metrics.push_str("# TYPE chain_height gauge\n");
                 metrics.push_str(&format!("chain_height {}\n", snapshot.chain_height));
