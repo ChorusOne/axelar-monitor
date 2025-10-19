@@ -1,4 +1,4 @@
-use crate::blocks::{Block, parse_block};
+use crate::blocks::{Block, RawPollRequests, parse_block};
 use crate::config::{ChainParams, Config};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -261,42 +261,31 @@ fn io_thread_loop(
                                     .unwrap();
                             }
 
-                            // Extract ConfirmGatewayTx requests (singular, deprecated)
-                            let gateway_tx_reqs = blocks::extract_confirm_gateway_tx_requests(&txs);
-                            // Extract ConfirmGatewayTxs requests (plural, current)
-                            let gateway_txs_reqs =
-                                blocks::extract_confirm_gateway_txs_requests(&txs);
-                            // Extract ConfirmDeposit requests
-                            let deposit_reqs = blocks::extract_confirm_deposit_requests(&txs);
+                            let reqs = blocks::extract_raw_poll_requests(&txs);
 
-                            let mut poll_requests = Vec::new();
-
-                            // Convert singular gateway requests to PollRequest
-                            for req in gateway_tx_reqs {
-                                poll_requests.push(PollRequest::GatewayTx {
-                                    tx: hex::encode(&req.tx_id),
-                                    chain: req.chain.clone(),
-                                });
-                            }
-
-                            // Convert plural gateway requests to PollRequest
-                            for req in gateway_txs_reqs {
-                                for tx_id in req.tx_ids {
-                                    poll_requests.push(PollRequest::GatewayTx {
-                                        tx: hex::encode(&tx_id),
-                                        chain: req.chain.clone(),
-                                    });
-                                }
-                            }
-
-                            // Convert deposit requests to PollRequest
-                            for req in deposit_reqs {
-                                poll_requests.push(PollRequest::Deposit {
-                                    tx: hex::encode(&req.tx_id),
-                                    chain: req.chain.clone(),
-                                    burner_address: hex::encode(&req.burner_address),
-                                });
-                            }
+                            let poll_requests: Vec<PollRequest> = reqs
+                                .iter()
+                                .map(|r| match r {
+                                    RawPollRequests::GatewayTx(g) => vec![PollRequest::GatewayTx {
+                                        tx: hex::encode(&g.tx_id),
+                                        chain: g.chain.clone(),
+                                    }],
+                                    RawPollRequests::GatewayTxs(g) => g
+                                        .tx_ids
+                                        .iter()
+                                        .map(|tx_id| PollRequest::GatewayTx {
+                                            tx: hex::encode(&tx_id),
+                                            chain: g.chain.clone(),
+                                        })
+                                        .collect(),
+                                    RawPollRequests::Deposit(d) => vec![PollRequest::Deposit {
+                                        tx: hex::encode(&d.tx_id),
+                                        chain: d.chain.clone(),
+                                        burner_address: hex::encode(&d.burner_address),
+                                    }],
+                                })
+                                .flatten()
+                                .collect();
 
                             if !poll_requests.is_empty() {
                                 msg_tx

@@ -5,7 +5,9 @@ use serde::Deserialize;
 
 use crate::PollVote;
 use crate::generated::axelar::evm::v1beta1::event::Event;
-use crate::generated::axelar::evm::v1beta1::{ConfirmDepositRequest, ConfirmGatewayTxRequest, ConfirmGatewayTxsRequest, VoteEvents};
+use crate::generated::axelar::evm::v1beta1::{
+    ConfirmDepositRequest, ConfirmGatewayTxRequest, ConfirmGatewayTxsRequest, VoteEvents,
+};
 use crate::generated::axelar::reward::v1beta1::RefundMsgRequest;
 use crate::generated::axelar::tss::v1beta1::HeartBeatRequest;
 use crate::generated::axelar::vote::v1beta1::VoteRequest;
@@ -104,40 +106,33 @@ pub fn print_all_refund_inner_message_types(tx: &TxBody) {
     }
 }
 
-pub fn extract_confirm_gateway_tx_requests(txs: &[TxBody]) -> Vec<ConfirmGatewayTxRequest> {
-    txs.iter()
-        .map(|tx| {
-            tx.messages
-                .iter()
-                .filter(|msg| msg.type_url == "/axelar.evm.v1beta1.ConfirmGatewayTxRequest")
-                .filter_map(|msg| ConfirmGatewayTxRequest::decode(&msg.value[..]).ok())
-                .collect::<Vec<ConfirmGatewayTxRequest>>()
-        })
-        .flatten()
-        .collect()
+pub enum RawPollRequests {
+    GatewayTx(ConfirmGatewayTxRequest),
+    GatewayTxs(ConfirmGatewayTxsRequest),
+    Deposit(ConfirmDepositRequest),
 }
-
-pub fn extract_confirm_gateway_txs_requests(txs: &[TxBody]) -> Vec<ConfirmGatewayTxsRequest> {
+pub fn extract_raw_poll_requests(txs: &[TxBody]) -> Vec<RawPollRequests> {
     txs.iter()
         .map(|tx| {
             tx.messages
                 .iter()
-                .filter(|msg| msg.type_url == "/axelar.evm.v1beta1.ConfirmGatewayTxsRequest")
-                .filter_map(|msg| ConfirmGatewayTxsRequest::decode(&msg.value[..]).ok())
-                .collect::<Vec<ConfirmGatewayTxsRequest>>()
-        })
-        .flatten()
-        .collect()
-}
-
-pub fn extract_confirm_deposit_requests(txs: &[TxBody]) -> Vec<ConfirmDepositRequest> {
-    txs.iter()
-        .map(|tx| {
-            tx.messages
-                .iter()
-                .filter(|msg| msg.type_url == "/axelar.evm.v1beta1.ConfirmDepositRequest")
-                .filter_map(|msg| ConfirmDepositRequest::decode(&msg.value[..]).ok())
-                .collect::<Vec<ConfirmDepositRequest>>()
+                .filter_map(|msg| match msg.type_url.as_str() {
+                    "/axelar.evm.v1beta1.ConfirmGatewayTxRequest" => {
+                        Some(RawPollRequests::GatewayTx(
+                            ConfirmGatewayTxRequest::decode(&msg.value[..]).unwrap(),
+                        ))
+                    }
+                    "/axelar.evm.v1beta1.ConfirmGatewayTxsRequest" => {
+                        Some(RawPollRequests::GatewayTxs(
+                            ConfirmGatewayTxsRequest::decode(&msg.value[..]).unwrap(),
+                        ))
+                    }
+                    "/axelar.evm.v1beta1.ConfirmDepositRequest" => Some(RawPollRequests::Deposit(
+                        ConfirmDepositRequest::decode(&msg.value[..]).unwrap(),
+                    )),
+                    _ => None,
+                })
+                .collect::<Vec<RawPollRequests>>()
         })
         .flatten()
         .collect()
