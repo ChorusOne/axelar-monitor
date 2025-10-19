@@ -48,6 +48,9 @@ struct PollMappingJson {
 }
 
 fn extract_poll_mappings_from_json(event: &TendermintEvent) -> Vec<PollMapping> {
+    // TODO: we _could_ track participants (Vec<addr>)
+    // to derive VP & poll completion
+    // for now, we assume that after poll expiry, they all complete
     let mut poll_mappings = Vec::new();
     for attr in &event.attributes {
         let key_decoded = general_purpose::STANDARD.decode(&attr.key).ok();
