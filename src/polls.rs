@@ -47,6 +47,12 @@ struct PollMappingJson {
     poll_id: String,
 }
 
+#[derive(Deserialize, Debug)]
+struct PollParticipantsJson {
+    poll_id: String,
+    // Ignore participants field - we don't need it
+}
+
 fn extract_poll_mappings_from_json(event: &TendermintEvent) -> Vec<PollMapping> {
     // TODO: we _could_ track participants (Vec<addr>)
     // to derive VP & poll completion
@@ -137,11 +143,13 @@ fn extract_poll_participants_from_event(event: &TendermintEvent) -> Option<PollP
                             }
                         }
                     }
-                    "participants.poll_id" => {
+                    "participants" => {
                         if let Some(value) = &attr.value {
                             if let Ok(value_bytes) = general_purpose::STANDARD.decode(value) {
                                 if let Ok(value_str) = String::from_utf8(value_bytes) {
-                                    poll_id = value_str.parse::<u64>().ok();
+                                    if let Ok(json) = serde_json::from_str::<PollParticipantsJson>(&value_str) {
+                                        poll_id = json.poll_id.parse::<u64>().ok();
+                                    }
                                 }
                             }
                         }

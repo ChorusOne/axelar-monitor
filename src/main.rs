@@ -251,15 +251,26 @@ fn io_thread_loop(
                                     .unwrap();
                             }
 
-                            // Extract ConfirmGatewayTxs requests
-                            let gateway_reqs = blocks::extract_confirm_gateway_txs_requests(&txs);
+                            // Extract ConfirmGatewayTx requests (singular, deprecated)
+                            let gateway_tx_reqs = blocks::extract_confirm_gateway_tx_requests(&txs);
+                            // Extract ConfirmGatewayTxs requests (plural, current)
+                            let gateway_txs_reqs =
+                                blocks::extract_confirm_gateway_txs_requests(&txs);
                             // Extract ConfirmDeposit requests
                             let deposit_reqs = blocks::extract_confirm_deposit_requests(&txs);
 
                             let mut poll_requests = Vec::new();
 
-                            // Convert gateway requests to PollRequest
-                            for req in gateway_reqs {
+                            // Convert singular gateway requests to PollRequest
+                            for req in gateway_tx_reqs {
+                                poll_requests.push(PollRequest::GatewayTx {
+                                    tx: hex::encode(&req.tx_id),
+                                    chain: req.chain.clone(),
+                                });
+                            }
+
+                            // Convert plural gateway requests to PollRequest
+                            for req in gateway_txs_reqs {
                                 for tx_id in req.tx_ids {
                                     poll_requests.push(PollRequest::GatewayTx {
                                         tx: hex::encode(&tx_id),
@@ -338,7 +349,38 @@ fn io_thread_loop(
                     Ok(block_results) => {
                         let mut complete_polls = Vec::new();
 
-                        // Handle ConfirmGatewayTxsStarted events (batch, uses poll_mappings)
+                        // Handle ConfirmGatewayTxStarted events (singular, deprecated, uses participants)
+                        let gateway_tx_participants = polls::extract_poll_participants_from_events(
+                            &block_results,
+                            "axelar.evm.v1beta1.ConfirmGatewayTxStarted",
+                        );
+
+                        for participant in gateway_tx_participants {
+                            let tx_id_hex = hex::encode(&participant.tx_id);
+
+                            if let Some(creation) =
+                                poll_creations.iter().find(|pc| pc.tx() == tx_id_hex)
+                            {
+                                if let PollCreation::GatewayTx { chain, .. } = creation {
+                                    complete_polls.push(Poll {
+                                        poll_id: participant.poll_id,
+                                        poll_type: PollType::GatewayTx {
+                                            chain: chain.clone(),
+                                            tx: tx_id_hex.clone(),
+                                        },
+                                        votes: vec![],
+                                        expiry_height: creation.expiry_height(),
+                                    });
+                                }
+                            } else {
+                                warn!(
+                                    "Got gateway tx poll for tx_id={} but no matching PollCreation",
+                                    tx_id_hex
+                                );
+                            }
+                        }
+
+                        // Handle ConfirmGatewayTxsStarted events (plural, current, uses poll_mappings)
                         let poll_mappings =
                             polls::extract_poll_mappings_from_events(&block_results);
 
@@ -475,12 +517,13 @@ fn processing_loop(
                     }
                 }
                 IoResult::NewPollRequests(height, poll_requests) => {
-                    debug!("Sending FetchPollEvents command for height {}", height);
+                    info!("Processing {} poll_requests for height {}", poll_requests.len(), height);
 
                     let mut poll_creations = Vec::new();
 
                     // Convert PollRequest to PollCreation by calculating expiry heights
                     for request in poll_requests {
+                        info!("Processing poll request: tx={}, chain={}", request.tx(), request.chain());
                         match request {
                             PollRequest::GatewayTx { chain, tx } => {
                                 if let Some(params) = chain_params.get(&chain.to_lowercase()) {
@@ -532,16 +575,23 @@ fn processing_loop(
                         }
                     }
 
-                    cmd_tx
-                        .send(IoCommand::FetchPollEvents(height, poll_creations))
-                        .unwrap();
+                    if !poll_creations.is_empty() {
+                        debug!(
+                            "Sending FetchPollEvents for height {} with {} poll_creations",
+                            height,
+                            poll_creations.len()
+                        );
+                        cmd_tx
+                            .send(IoCommand::FetchPollEvents(height, poll_creations))
+                            .unwrap();
+                    }
                 }
                 IoResult::PollMappings(height, complete_polls) => {
                     for poll in complete_polls {
                         match &poll.poll_type {
                             PollType::GatewayTx { chain, tx } => {
                                 info!(
-                                    "Height {}: ConfirmGatewayTxsStarted event - tx_id={}, poll_id={}, chain={}, expiry_height={}",
+                                    "Height {}: ConfirmGatewayTx(s)Started event - tx_id={}, poll_id={}, chain={}, expiry_height={}",
                                     height, tx, poll.poll_id, chain, poll.expiry_height
                                 );
                             }
@@ -642,7 +692,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             feeder_tx
                 .send(IoCommand::FetchBlock(Height::Specific(height)))
                 .unwrap();
-            std::thread::sleep(Duration::from_secs(1));
+            std::thread::sleep(Duration::from_secs(2));
             feeder_tx
                 .send(IoCommand::FetchBlock(Height::Specific(height + 1)))
                 .unwrap();
