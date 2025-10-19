@@ -1,8 +1,6 @@
 use base64::{Engine as _, engine::general_purpose};
 use serde::Deserialize;
 
-use crate::generated::axelar::evm::v1beta1::PollMapping;
-
 #[derive(Deserialize, Debug)]
 pub struct BlockResultsResponse {
     pub result: BlockResults,
@@ -53,7 +51,7 @@ struct PollParticipantsJson {
     // Ignore participants field - we don't need it
 }
 
-fn extract_poll_mappings_from_json(event: &TendermintEvent) -> Vec<PollMapping> {
+fn extract_poll_mappings_from_json(event: &TendermintEvent) -> Vec<PollEvent> {
     // TODO: we _could_ track participants (Vec<addr>)
     // to derive VP & poll completion
     // for now, we assume that after poll expiry, they all complete
@@ -71,7 +69,7 @@ fn extract_poll_mappings_from_json(event: &TendermintEvent) -> Vec<PollMapping> 
                         {
                             for mapping in mappings {
                                 if let Ok(poll_id) = mapping.poll_id.parse::<u64>() {
-                                    poll_mappings.push(PollMapping {
+                                    poll_mappings.push(PollEvent::GatewayTx {
                                         tx_id: mapping.tx_id,
                                         poll_id,
                                     });
@@ -83,22 +81,6 @@ fn extract_poll_mappings_from_json(event: &TendermintEvent) -> Vec<PollMapping> 
             }
         }
     }
-    poll_mappings
-}
-pub fn extract_poll_mappings_from_events(block_results: &BlockResults) -> Vec<PollMapping> {
-    let mut poll_mappings = Vec::new();
-    if let Some(txs_results) = &block_results.txs_results {
-        for tx_result in txs_results {
-            if let Some(events) = &tx_result.events {
-                for event in events {
-                    if event.r#type == "axelar.evm.v1beta1.ConfirmGatewayTxsStarted" {
-                        poll_mappings.append(&mut extract_poll_mappings_from_json(event));
-                    }
-                }
-            }
-        }
-    }
-
     poll_mappings
 }
 
@@ -130,27 +112,6 @@ impl PollEvent {
             PollEvent::TransferKey { poll_id, .. } => *poll_id,
         }
     }
-}
-
-pub fn extract_poll_participants_from_events(
-    block_results: &BlockResults,
-    event_type: &str,
-) -> Vec<PollParticipants> {
-    let mut participants = Vec::new();
-    if let Some(txs_results) = &block_results.txs_results {
-        for tx_result in txs_results {
-            if let Some(events) = &tx_result.events {
-                for event in events {
-                    if event.r#type == event_type {
-                        if let Some(part) = extract_poll_participants_from_event(event) {
-                            participants.push(part);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    participants
 }
 
 fn extract_poll_participants_from_event(event: &TendermintEvent) -> Option<PollParticipants> {
@@ -235,6 +196,10 @@ pub fn extract_all_poll_events(block_results: &BlockResults) -> Vec<PollEvent> {
 
                     if let Some(pe) = poll_event {
                         poll_events.push(pe);
+                    }
+
+                    if event.r#type == "axelar.evm.v1beta1.ConfirmGatewayTxsStarted" {
+                        poll_events.append(&mut extract_poll_mappings_from_json(event));
                     }
                 }
             }

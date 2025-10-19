@@ -93,20 +93,6 @@ fn extract_refund_messages(tx_body: &TxBody) -> Vec<&cosmos_sdk_proto::Any> {
         .collect()
 }
 
-pub fn print_all_refund_inner_message_types(tx: &TxBody) {
-    let refund_messages = extract_refund_messages(tx);
-    for refund_msg in refund_messages {
-        if let Ok(refund) = RefundMsgRequest::decode(&refund_msg.value[..]) {
-            if let Some(inner) = refund.inner_message {
-                println!(
-                    "  RefundMsgRequest.inner_message.type_url: {}",
-                    inner.type_url
-                );
-            }
-        }
-    }
-}
-
 pub enum RawPollRequests {
     GatewayTx(ConfirmGatewayTxRequest),
     GatewayTxs(ConfirmGatewayTxsRequest),
@@ -124,6 +110,7 @@ pub fn extract_raw_poll_requests(txs: &[TxBody]) -> Vec<RawPollRequests> {
                             ConfirmGatewayTxRequest::decode(&msg.value[..]).unwrap(),
                         ))
                     }
+                    // Tx<s> (plural)
                     "/axelar.evm.v1beta1.ConfirmGatewayTxsRequest" => {
                         Some(RawPollRequests::GatewayTxs(
                             ConfirmGatewayTxsRequest::decode(&msg.value[..]).unwrap(),

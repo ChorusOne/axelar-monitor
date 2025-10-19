@@ -1,6 +1,5 @@
 use crate::blocks::{Block, RawPollRequests, parse_block};
 use crate::config::{ChainParams, Config};
-use crate::polls::PollEvent;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::mpsc;
@@ -164,6 +163,27 @@ enum PollCreation {
 }
 
 impl PollCreation {
+    fn into_polltype(&self, tx: String) -> PollType {
+        match &self {
+            PollCreation::GatewayTx { chain, .. } => PollType::GatewayTx {
+                chain: chain.clone(),
+                tx,
+            },
+            PollCreation::Deposit {
+                chain,
+                burner_address,
+                ..
+            } => PollType::Deposit {
+                chain: chain.clone(),
+                tx,
+                burner_address: burner_address.clone(),
+            },
+            PollCreation::TransferKey { chain, .. } => PollType::TransferKey {
+                chain: chain.clone(),
+                tx,
+            },
+        }
+    }
     fn tx(&self) -> &str {
         match self {
             PollCreation::GatewayTx { tx, .. } => tx,
@@ -177,14 +197,6 @@ impl PollCreation {
             PollCreation::GatewayTx { expiry_height, .. } => *expiry_height,
             PollCreation::Deposit { expiry_height, .. } => *expiry_height,
             PollCreation::TransferKey { expiry_height, .. } => *expiry_height,
-        }
-    }
-
-    fn chain(&self) -> &str {
-        match self {
-            PollCreation::GatewayTx { chain, .. } => chain,
-            PollCreation::Deposit { chain, .. } => chain,
-            PollCreation::TransferKey { chain, .. } => chain,
         }
     }
 }
@@ -379,35 +391,6 @@ fn io_thread_loop(
                     Ok(block_results) => {
                         let mut complete_polls = Vec::new();
 
-                        // Extract poll_mappings for batch GatewayTxs events
-                        let poll_mappings =
-                            polls::extract_poll_mappings_from_events(&block_results);
-
-                        for poll_mapping in poll_mappings {
-                            let tx_id_hex = hex::encode(&poll_mapping.tx_id);
-
-                            if let Some(creation) =
-                                poll_creations.iter().find(|pc| pc.tx() == tx_id_hex)
-                            {
-                                if let PollCreation::GatewayTx { chain, .. } = creation {
-                                    complete_polls.push(Poll {
-                                        poll_id: poll_mapping.poll_id,
-                                        poll_type: PollType::GatewayTx {
-                                            chain: chain.clone(),
-                                            tx: tx_id_hex.clone(),
-                                        },
-                                        votes: vec![],
-                                        expiry_height: creation.expiry_height(),
-                                    });
-                                }
-                            } else {
-                                warn!(
-                                    "Got poll_mapping for tx_id={} but no matching PollCreation",
-                                    tx_id_hex
-                                );
-                            }
-                        }
-
                         let poll_events = polls::extract_all_poll_events(&block_results);
                         let tx_to_poll_ids: HashMap<String, u64> = poll_events
                             .iter()
@@ -417,47 +400,12 @@ fn io_thread_loop(
                         for creation in poll_creations {
                             let tx_id = creation.tx();
                             if let Some(poll_id) = tx_to_poll_ids.get(tx_id) {
-                                match &creation {
-                                    PollCreation::GatewayTx { chain, .. } => {
-                                        complete_polls.push(Poll {
-                                            poll_id: *poll_id,
-                                            poll_type: PollType::GatewayTx {
-                                                chain: chain.clone(),
-                                                tx: tx_id.into(),
-                                            },
-                                            votes: vec![],
-                                            expiry_height: creation.expiry_height(),
-                                        });
-                                    }
-                                    PollCreation::Deposit {
-                                        chain,
-                                        burner_address,
-                                        ..
-                                    } => {
-                                        complete_polls.push(Poll {
-                                            poll_id: *poll_id,
-                                            poll_type: PollType::Deposit {
-                                                chain: chain.clone(),
-                                                tx: tx_id.into(),
-                                                burner_address: burner_address.clone(),
-                                            },
-                                            votes: vec![],
-                                            expiry_height: creation.expiry_height(),
-                                        });
-                                        info!("Pushing Deposit poll with id {}", poll_id);
-                                    }
-                                    PollCreation::TransferKey { chain, .. } => {
-                                        complete_polls.push(Poll {
-                                            poll_id: *poll_id,
-                                            poll_type: PollType::TransferKey {
-                                                chain: chain.clone(),
-                                                tx: tx_id.into(),
-                                            },
-                                            votes: vec![],
-                                            expiry_height: creation.expiry_height(),
-                                        });
-                                    }
-                                }
+                                complete_polls.push(Poll {
+                                    poll_id: *poll_id,
+                                    votes: vec![],
+                                    expiry_height: creation.expiry_height(),
+                                    poll_type: creation.into_polltype(tx_id.into()),
+                                });
                             } else {
                                 warn!(
                                     "Got poll event for tx_id={} but no matching PollCreation",
