@@ -1,5 +1,6 @@
 use crate::blocks::{Block, RawPollRequests, parse_block};
 use crate::config::{ChainParams, Config};
+use crate::polls::PollEvent;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::mpsc;
@@ -371,43 +372,14 @@ fn io_thread_loop(
                     error!("Failed to fetch params for chain {}: {}", &chain, e);
                 }
             },
+            // merge poll-creation txs with block_results
+            // into a complete poll (with poll_id)
             Ok(IoCommand::FetchPollEvents(height, poll_creations)) => {
                 match polls::get_block_results(&lcd_url, height) {
                     Ok(block_results) => {
                         let mut complete_polls = Vec::new();
 
-                        // Handle ConfirmGatewayTxStarted events (singular, deprecated, uses participants)
-                        let gateway_tx_participants = polls::extract_poll_participants_from_events(
-                            &block_results,
-                            "axelar.evm.v1beta1.ConfirmGatewayTxStarted",
-                        );
-
-                        for participant in gateway_tx_participants {
-                            let tx_id_hex = hex::encode(&participant.tx_id);
-
-                            if let Some(creation) =
-                                poll_creations.iter().find(|pc| pc.tx() == tx_id_hex)
-                            {
-                                if let PollCreation::GatewayTx { chain, .. } = creation {
-                                    complete_polls.push(Poll {
-                                        poll_id: participant.poll_id,
-                                        poll_type: PollType::GatewayTx {
-                                            chain: chain.clone(),
-                                            tx: tx_id_hex.clone(),
-                                        },
-                                        votes: vec![],
-                                        expiry_height: creation.expiry_height(),
-                                    });
-                                }
-                            } else {
-                                warn!(
-                                    "Got gateway tx poll for tx_id={} but no matching PollCreation",
-                                    tx_id_hex
-                                );
-                            }
-                        }
-
-                        // Handle ConfirmGatewayTxsStarted events (plural, current, uses poll_mappings)
+                        // Extract poll_mappings for batch GatewayTxs events
                         let poll_mappings =
                             polls::extract_poll_mappings_from_events(&block_results);
 
@@ -436,80 +408,60 @@ fn io_thread_loop(
                             }
                         }
 
-                        // Handle ConfirmDepositStarted events (single poll, uses participants)
-                        let deposit_participants = polls::extract_poll_participants_from_events(
-                            &block_results,
-                            "axelar.evm.v1beta1.ConfirmDepositStarted",
-                        );
+                        let poll_events = polls::extract_all_poll_events(&block_results);
+                        let tx_to_poll_ids: HashMap<String, u64> = poll_events
+                            .iter()
+                            .map(|pe| (pe.tx(), pe.poll_id()))
+                            .collect();
 
-                        for participant in deposit_participants {
-                            let tx_id_hex = hex::encode(&participant.tx_id);
-
-                            if let Some(creation) =
-                                poll_creations.iter().find(|pc| pc.tx() == tx_id_hex)
-                            {
-                                if let PollCreation::Deposit {
-                                    chain,
-                                    burner_address,
-                                    ..
-                                } = creation
-                                {
-                                    complete_polls.push(Poll {
-                                        poll_id: participant.poll_id,
-                                        poll_type: PollType::Deposit {
-                                            chain: chain.clone(),
-                                            tx: tx_id_hex.clone(),
-                                            burner_address: burner_address.clone(),
-                                        },
-                                        votes: vec![],
-                                        expiry_height: creation.expiry_height(),
-                                    });
-                                    info!("Pushing Deposit poll with id {}", participant.poll_id);
-                                }
-                            } else {
-                                warn!(
-                                    "Got deposit poll for tx_id={} but no matching PollCreation",
-                                    tx_id_hex
-                                );
-                            }
-                        }
-
-                        // Handle ConfirmKeyTransferStarted events (single poll, uses participants)
-                        let transfer_key_participants =
-                            polls::extract_poll_participants_from_events(
-                                &block_results,
-                                "axelar.evm.v1beta1.ConfirmKeyTransferStarted",
-                            );
-
-                        for participant in transfer_key_participants {
-                            let tx_id_hex = hex::encode(&participant.tx_id);
-
-                            if let Some(creation) =
-                                poll_creations.iter().find(|pc| pc.tx() == tx_id_hex)
-                            {
-                                if let PollCreation::TransferKey { chain, .. } = creation {
-                                    complete_polls.push(Poll {
-                                        poll_id: participant.poll_id,
-                                        poll_type: PollType::TransferKey {
-                                            chain: chain.clone(),
-                                            tx: tx_id_hex.clone(),
-                                        },
-                                        votes: vec![],
-                                        expiry_height: creation.expiry_height(),
-                                    });
-                                    info!(
-                                        "Height {}: ConfirmKeyTransferStarted event - tx_id={}, poll_id={}, chain={}, expiry_height={}",
-                                        height,
-                                        tx_id_hex,
-                                        participant.poll_id,
+                        for creation in poll_creations {
+                            let tx_id = creation.tx();
+                            if let Some(poll_id) = tx_to_poll_ids.get(tx_id) {
+                                match &creation {
+                                    PollCreation::GatewayTx { chain, .. } => {
+                                        complete_polls.push(Poll {
+                                            poll_id: *poll_id,
+                                            poll_type: PollType::GatewayTx {
+                                                chain: chain.clone(),
+                                                tx: tx_id.into(),
+                                            },
+                                            votes: vec![],
+                                            expiry_height: creation.expiry_height(),
+                                        });
+                                    }
+                                    PollCreation::Deposit {
                                         chain,
-                                        creation.expiry_height()
-                                    );
+                                        burner_address,
+                                        ..
+                                    } => {
+                                        complete_polls.push(Poll {
+                                            poll_id: *poll_id,
+                                            poll_type: PollType::Deposit {
+                                                chain: chain.clone(),
+                                                tx: tx_id.into(),
+                                                burner_address: burner_address.clone(),
+                                            },
+                                            votes: vec![],
+                                            expiry_height: creation.expiry_height(),
+                                        });
+                                        info!("Pushing Deposit poll with id {}", poll_id);
+                                    }
+                                    PollCreation::TransferKey { chain, .. } => {
+                                        complete_polls.push(Poll {
+                                            poll_id: *poll_id,
+                                            poll_type: PollType::TransferKey {
+                                                chain: chain.clone(),
+                                                tx: tx_id.into(),
+                                            },
+                                            votes: vec![],
+                                            expiry_height: creation.expiry_height(),
+                                        });
+                                    }
                                 }
                             } else {
                                 warn!(
-                                    "Got transfer key poll for tx_id={} but no matching PollCreation",
-                                    tx_id_hex
+                                    "Got poll event for tx_id={} but no matching PollCreation",
+                                    tx_id
                                 );
                             }
                         }
@@ -549,8 +501,7 @@ fn processing_loop(
 
     let mut chain_params: HashMap<String, ChainParams> =
         HashMap::with_capacity(config.chain_params.len());
-    let mut polls: HashMap<String, Poll> = HashMap::new();
-    let mut poll_id_to_tx_id: HashMap<u64, String> = HashMap::new();
+    let mut polls: HashMap<u64, Poll> = HashMap::new();
 
     for chain_param in config.chain_params {
         chain_params.insert(chain_param.name.to_lowercase(), chain_param);
@@ -591,6 +542,7 @@ fn processing_loop(
                         }
                     }
                 }
+                // merge poll data (tx) with chain params
                 IoResult::NewPollRequests(height, poll_requests) => {
                     info!(
                         "Processing {} poll_requests for height {}",
@@ -659,50 +611,13 @@ fn processing_loop(
                 }
                 IoResult::PollMappings(height, complete_polls) => {
                     for poll in complete_polls {
-                        match &poll.poll_type {
-                            PollType::GatewayTx { chain, tx } => {
-                                info!(
-                                    "Height {}: ConfirmGatewayTx(s)Started event - tx_id={}, poll_id={}, chain={}, expiry_height={}",
-                                    height, tx, poll.poll_id, chain, poll.expiry_height
-                                );
-                            }
-                            PollType::Deposit {
-                                chain,
-                                tx,
-                                burner_address,
-                            } => {
-                                info!(
-                                    "Height {}: ConfirmDepositStarted event - tx_id={}, poll_id={}, chain={}, burner={}, expiry_height={}",
-                                    height,
-                                    tx,
-                                    poll.poll_id,
-                                    chain,
-                                    burner_address,
-                                    poll.expiry_height
-                                );
-                            }
-                            PollType::TransferKey { chain, tx } => {
-                                info!(
-                                    "Height {}: ConfirmKeyTransferStarted event - tx_id={}, poll_id={}, chain={}, expiry_height={}",
-                                    height, tx, poll.poll_id, chain, poll.expiry_height
-                                );
-                            }
-                        }
-
-                        let tx_id = poll.tx().to_string();
-                        poll_id_to_tx_id.insert(poll.poll_id, tx_id.clone());
-                        polls.insert(tx_id, poll);
+                        info!("Received poll at {height} = {poll:?}");
+                        polls.insert(poll.poll_id, poll);
                     }
                 }
                 IoResult::Votes(votes) => {
                     for vote in votes {
-                        let poll = if !vote.tx_id.is_empty() {
-                            polls.get_mut(&vote.tx_id)
-                        } else if let Some(tx_id) = poll_id_to_tx_id.get(&vote.poll_id) {
-                            polls.get_mut(tx_id)
-                        } else {
-                            None
-                        };
+                        let poll = polls.get_mut(&vote.poll_id);
 
                         if let Some(p) = poll {
                             info!("vote: {:?}", vote);

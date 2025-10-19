@@ -109,6 +109,29 @@ pub struct PollParticipants {
     // TODO: extract asset from ConfirmDepositStarted event if needed
 }
 
+#[derive(Debug)]
+pub enum PollEvent {
+    GatewayTx { tx_id: Vec<u8>, poll_id: u64 },
+    Deposit { tx_id: Vec<u8>, poll_id: u64 },
+    TransferKey { tx_id: Vec<u8>, poll_id: u64 },
+}
+impl PollEvent {
+    pub fn tx(&self) -> String {
+        match self {
+            PollEvent::Deposit { tx_id, .. } => hex::encode(tx_id),
+            PollEvent::GatewayTx { tx_id, .. } => hex::encode(tx_id),
+            PollEvent::TransferKey { tx_id, .. } => hex::encode(tx_id),
+        }
+    }
+    pub fn poll_id(&self) -> u64 {
+        match self {
+            PollEvent::Deposit { poll_id, .. } => *poll_id,
+            PollEvent::GatewayTx { poll_id, .. } => *poll_id,
+            PollEvent::TransferKey { poll_id, .. } => *poll_id,
+        }
+    }
+}
+
 pub fn extract_poll_participants_from_events(
     block_results: &BlockResults,
     event_type: &str,
@@ -173,4 +196,50 @@ fn extract_poll_participants_from_event(event: &TendermintEvent) -> Option<PollP
     } else {
         None
     }
+}
+
+pub fn extract_all_poll_events(block_results: &BlockResults) -> Vec<PollEvent> {
+    let mut poll_events = Vec::new();
+
+    if let Some(txs_results) = &block_results.txs_results {
+        for tx_result in txs_results {
+            if let Some(events) = &tx_result.events {
+                for event in events {
+                    let poll_event = match event.r#type.as_str() {
+                        "axelar.evm.v1beta1.ConfirmGatewayTxStarted" => {
+                            extract_poll_participants_from_event(event).map(|p| {
+                                PollEvent::GatewayTx {
+                                    tx_id: p.tx_id,
+                                    poll_id: p.poll_id,
+                                }
+                            })
+                        }
+                        "axelar.evm.v1beta1.ConfirmDepositStarted" => {
+                            extract_poll_participants_from_event(event).map(|p| {
+                                PollEvent::Deposit {
+                                    tx_id: p.tx_id,
+                                    poll_id: p.poll_id,
+                                }
+                            })
+                        }
+                        "axelar.evm.v1beta1.ConfirmKeyTransferStarted" => {
+                            extract_poll_participants_from_event(event).map(|p| {
+                                PollEvent::TransferKey {
+                                    tx_id: p.tx_id,
+                                    poll_id: p.poll_id,
+                                }
+                            })
+                        }
+                        _ => None,
+                    };
+
+                    if let Some(pe) = poll_event {
+                        poll_events.push(pe);
+                    }
+                }
+            }
+        }
+    }
+
+    poll_events
 }
