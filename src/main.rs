@@ -1,5 +1,5 @@
 use crate::blocks::{Block, parse_block};
-use crate::config::Config;
+use crate::config::{ChainParams, Config};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::mpsc;
@@ -37,7 +37,7 @@ enum IoResult {
     Votes(Vec<PollVote>),
     FetchError(Height, String),
     ChainList(Vec<String>),
-    ChainParams(ChainParams),
+    ChainParams(config::ChainParams),
 }
 
 #[derive(Debug)]
@@ -60,14 +60,24 @@ struct ChainListResponse {
 
 #[derive(Deserialize, Debug)]
 struct ChainParamsResponse {
-    params: ChainParams,
+    params: ChainParamsJson,
 }
 
 #[derive(Deserialize, Debug)]
-struct ChainParams {
+struct ChainParamsJson {
     chain: String,
     revote_locking_period: String,
     voting_grace_period: String,
+}
+
+impl Into<ChainParams> for ChainParamsJson {
+    fn into(self) -> ChainParams {
+        ChainParams {
+            name: self.chain,
+            revote_locking_period: self.revote_locking_period.parse().unwrap(),
+            voting_grace_period: self.voting_grace_period.parse().unwrap(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -212,7 +222,7 @@ fn get_chain_list(base_url: &str) -> Result<Vec<String>, Box<dyn std::error::Err
 fn get_chain_params(
     base_url: &str,
     chain: &str,
-) -> Result<ChainParams, Box<dyn std::error::Error>> {
+) -> Result<ChainParamsJson, Box<dyn std::error::Error>> {
     let url = format!("{}/axelar/evm/v1beta1/params/{}", base_url, chain);
     let mut response = ureq::get(&url).call()?;
     let body = response.body_mut().read_to_string()?;
@@ -337,7 +347,9 @@ fn io_thread_loop(
             Ok(IoCommand::FetchChainParams(chain)) => match get_chain_params(&rpc_url, &chain) {
                 Ok(params) => {
                     msg_tx
-                        .send(ProcessingMessage::IoResult(IoResult::ChainParams(params)))
+                        .send(ProcessingMessage::IoResult(IoResult::ChainParams(
+                            params.into(),
+                        )))
                         .unwrap();
                 }
                 Err(e) => {
@@ -437,6 +449,7 @@ fn io_thread_loop(
                                         votes: vec![],
                                         expiry_height: creation.expiry_height(),
                                     });
+                                    info!("Pushing Deposit poll with id {}", participant.poll_id);
                                 }
                             } else {
                                 warn!(
@@ -479,9 +492,14 @@ fn processing_loop(
         .map(|bc| (bc.name.clone(), 0))
         .collect();
 
-    let mut chain_params: HashMap<String, ChainParams> = HashMap::new();
+    let mut chain_params: HashMap<String, ChainParams> =
+        HashMap::with_capacity(config.chain_params.len());
     let mut polls: HashMap<String, Poll> = HashMap::new();
     let mut poll_id_to_tx_id: HashMap<u64, String> = HashMap::new();
+
+    for chain_param in config.chain_params {
+        chain_params.insert(chain_param.name.to_lowercase(), chain_param);
+    }
 
     loop {
         match msg_rx.recv()? {
@@ -496,7 +514,9 @@ fn processing_loop(
                         chains.len()
                     );
                     for chain in chains {
-                        cmd_tx.send(IoCommand::FetchChainParams(chain)).unwrap();
+                        if !chain_params.contains_key(&chain) {
+                            cmd_tx.send(IoCommand::FetchChainParams(chain)).unwrap();
+                        }
                     }
                 }
                 IoResult::Block(height) => {
@@ -517,18 +537,25 @@ fn processing_loop(
                     }
                 }
                 IoResult::NewPollRequests(height, poll_requests) => {
-                    info!("Processing {} poll_requests for height {}", poll_requests.len(), height);
+                    info!(
+                        "Processing {} poll_requests for height {}",
+                        poll_requests.len(),
+                        height
+                    );
 
                     let mut poll_creations = Vec::new();
 
                     // Convert PollRequest to PollCreation by calculating expiry heights
                     for request in poll_requests {
-                        info!("Processing poll request: tx={}, chain={}", request.tx(), request.chain());
+                        info!(
+                            "Processing poll request: tx={}, chain={}",
+                            request.tx(),
+                            request.chain()
+                        );
                         match request {
                             PollRequest::GatewayTx { chain, tx } => {
                                 if let Some(params) = chain_params.get(&chain.to_lowercase()) {
-                                    let revote_period =
-                                        params.revote_locking_period.parse::<u64>().unwrap();
+                                    let revote_period = params.revote_locking_period as u64;
                                     let expiry_height = height as u64 + revote_period;
                                     info!(
                                         "Height {}: ConfirmGatewayTxsRequest - chain={}, tx_id={}, expiry_height={}",
@@ -552,8 +579,7 @@ fn processing_loop(
                                 burner_address,
                             } => {
                                 if let Some(params) = chain_params.get(&chain.to_lowercase()) {
-                                    let revote_period =
-                                        params.revote_locking_period.parse::<u64>().unwrap();
+                                    let revote_period = params.revote_locking_period as u64;
                                     let expiry_height = height as u64 + revote_period;
                                     info!(
                                         "Height {}: ConfirmDepositRequest - chain={}, tx_id={}, burner={}, expiry_height={}",
@@ -639,8 +665,7 @@ fn processing_loop(
                     }
                 }
                 IoResult::ChainParams(chain) => {
-                    info!("got chain params {:?}", chain);
-                    chain_params.insert(chain.chain.to_lowercase(), chain);
+                    chain_params.insert(chain.name.to_lowercase(), chain);
                 }
             },
             ProcessingMessage::QueryMetrics(response_tx) => {
@@ -688,10 +713,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some(height) = single_block {
         thread::spawn(move || {
-            std::thread::sleep(Duration::from_secs(1));
             feeder_tx
                 .send(IoCommand::FetchBlock(Height::Specific(height)))
                 .unwrap();
+            // wait for block_result data to be fetched from rpc
             std::thread::sleep(Duration::from_secs(2));
             feeder_tx
                 .send(IoCommand::FetchBlock(Height::Specific(height + 1)))

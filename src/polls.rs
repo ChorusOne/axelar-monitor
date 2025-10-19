@@ -66,7 +66,9 @@ fn extract_poll_mappings_from_json(event: &TendermintEvent) -> Vec<PollMapping> 
             if let Some(value) = &attr.value {
                 if let Ok(value_bytes) = general_purpose::STANDARD.decode(value) {
                     if let Ok(value_str) = String::from_utf8(value_bytes) {
-                        if let Ok(mappings) = serde_json::from_str::<Vec<PollMappingJson>>(&value_str) {
+                        if let Ok(mappings) =
+                            serde_json::from_str::<Vec<PollMappingJson>>(&value_str)
+                        {
                             for mapping in mappings {
                                 if let Ok(poll_id) = mapping.poll_id.parse::<u64>() {
                                     poll_mappings.push(PollMapping {
@@ -139,7 +141,11 @@ fn extract_poll_participants_from_event(event: &TendermintEvent) -> Option<PollP
                     "tx_id" => {
                         if let Some(value) = &attr.value {
                             if let Ok(value_bytes) = general_purpose::STANDARD.decode(value) {
-                                tx_id = Some(value_bytes);
+                                if let Ok(value_str) = String::from_utf8(value_bytes) {
+                                    if let Ok(json) = serde_json::from_str::<Vec<u8>>(&value_str) {
+                                        tx_id = Some(json);
+                                    }
+                                }
                             }
                         }
                     }
@@ -147,7 +153,9 @@ fn extract_poll_participants_from_event(event: &TendermintEvent) -> Option<PollP
                         if let Some(value) = &attr.value {
                             if let Ok(value_bytes) = general_purpose::STANDARD.decode(value) {
                                 if let Ok(value_str) = String::from_utf8(value_bytes) {
-                                    if let Ok(json) = serde_json::from_str::<PollParticipantsJson>(&value_str) {
+                                    if let Ok(json) =
+                                        serde_json::from_str::<PollParticipantsJson>(&value_str)
+                                    {
                                         poll_id = json.poll_id.parse::<u64>().ok();
                                     }
                                 }
