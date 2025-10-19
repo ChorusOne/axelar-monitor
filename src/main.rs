@@ -1,5 +1,3 @@
-use crate::generated::axelar::evm::v1beta1::ConfirmGatewayTxsRequest;
-
 use crate::blocks::{Block, parse_block};
 use crate::config::Config;
 use serde::Deserialize;
@@ -24,7 +22,7 @@ enum Height {
 
 enum IoCommand {
     FetchBlock(Height),
-    FetchBlockResults(u64, Vec<PollCreation>),
+    FetchPollEvents(u64, Vec<PollCreation>),
     FetchChainList,
     FetchChainParams(String),
     #[allow(dead_code)]
@@ -34,7 +32,7 @@ enum IoCommand {
 enum IoResult {
     Block(u64),
     Heartbeats(u64, Vec<String>),
-    NewPolls(u64, Vec<ConfirmGatewayTxsRequest>),
+    NewPollRequests(u64, Vec<PollRequest>),
     PollMappings(u64, Vec<Poll>),
     Votes(Vec<PollVote>),
     FetchError(Height, String),
@@ -82,19 +80,108 @@ struct PollVote {
 }
 
 #[derive(Debug)]
-struct PollCreation {
-    tx: String,
-    expiry_height: u64,
-    chain: String,
+enum PollRequest {
+    GatewayTx {
+        tx: String,
+        chain: String,
+    },
+    Deposit {
+        tx: String,
+        chain: String,
+        burner_address: String,
+    },
+}
+
+impl PollRequest {
+    fn tx(&self) -> &str {
+        match self {
+            PollRequest::GatewayTx { tx, .. } => tx,
+            PollRequest::Deposit { tx, .. } => tx,
+        }
+    }
+
+    fn chain(&self) -> &str {
+        match self {
+            PollRequest::GatewayTx { chain, .. } => chain,
+            PollRequest::Deposit { chain, .. } => chain,
+        }
+    }
+}
+
+#[derive(Debug)]
+enum PollType {
+    GatewayTx {
+        chain: String,
+        tx: String,
+    },
+    Deposit {
+        chain: String,
+        tx: String,
+        burner_address: String,
+        // TODO: add asset field if needed (extract from ConfirmDepositStarted event)
+    },
+}
+
+#[derive(Debug)]
+enum PollCreation {
+    GatewayTx {
+        tx: String,
+        expiry_height: u64,
+        chain: String,
+    },
+    Deposit {
+        tx: String,
+        expiry_height: u64,
+        chain: String,
+        burner_address: String,
+    },
+}
+
+impl PollCreation {
+    fn tx(&self) -> &str {
+        match self {
+            PollCreation::GatewayTx { tx, .. } => tx,
+            PollCreation::Deposit { tx, .. } => tx,
+        }
+    }
+
+    fn expiry_height(&self) -> u64 {
+        match self {
+            PollCreation::GatewayTx { expiry_height, .. } => *expiry_height,
+            PollCreation::Deposit { expiry_height, .. } => *expiry_height,
+        }
+    }
+
+    fn chain(&self) -> &str {
+        match self {
+            PollCreation::GatewayTx { chain, .. } => chain,
+            PollCreation::Deposit { chain, .. } => chain,
+        }
+    }
 }
 
 #[derive(Debug)]
 struct Poll {
     poll_id: u64,
+    poll_type: PollType,
     votes: Vec<PollVote>,
     expiry_height: u64,
-    chain: String,
-    tx: String,
+}
+
+impl Poll {
+    fn tx(&self) -> &str {
+        match &self.poll_type {
+            PollType::GatewayTx { tx, .. } => tx,
+            PollType::Deposit { tx, .. } => tx,
+        }
+    }
+
+    fn chain(&self) -> &str {
+        match &self.poll_type {
+            PollType::GatewayTx { chain, .. } => chain,
+            PollType::Deposit { chain, .. } => chain,
+        }
+    }
 }
 
 fn get_block(base_url: &str, height: Height) -> Result<(Block, u64), Box<dyn std::error::Error>> {
@@ -164,13 +251,37 @@ fn io_thread_loop(
                                     .unwrap();
                             }
 
-                            // TODO (ConfirmGatewayTx, ConfirmDeposit, ConfirmToken, ConfirmTransferKey)
-                            let confirm_reqs = blocks::extract_confirm_gateway_txs_requests(&txs);
-                            if !confirm_reqs.is_empty() {
+                            // Extract ConfirmGatewayTxs requests
+                            let gateway_reqs = blocks::extract_confirm_gateway_txs_requests(&txs);
+                            // Extract ConfirmDeposit requests
+                            let deposit_reqs = blocks::extract_confirm_deposit_requests(&txs);
+
+                            let mut poll_requests = Vec::new();
+
+                            // Convert gateway requests to PollRequest
+                            for req in gateway_reqs {
+                                for tx_id in req.tx_ids {
+                                    poll_requests.push(PollRequest::GatewayTx {
+                                        tx: hex::encode(&tx_id),
+                                        chain: req.chain.clone(),
+                                    });
+                                }
+                            }
+
+                            // Convert deposit requests to PollRequest
+                            for req in deposit_reqs {
+                                poll_requests.push(PollRequest::Deposit {
+                                    tx: hex::encode(&req.tx_id),
+                                    chain: req.chain.clone(),
+                                    burner_address: hex::encode(&req.burner_address),
+                                });
+                            }
+
+                            if !poll_requests.is_empty() {
                                 msg_tx
-                                    .send(ProcessingMessage::IoResult(IoResult::NewPolls(
+                                    .send(ProcessingMessage::IoResult(IoResult::NewPollRequests(
                                         height,
-                                        confirm_reqs,
+                                        poll_requests,
                                     )))
                                     .unwrap();
                             }
@@ -222,44 +333,84 @@ fn io_thread_loop(
                     error!("Failed to fetch params for chain {}: {}", &chain, e);
                 }
             },
-            Ok(IoCommand::FetchBlockResults(height, poll_creations)) => {
+            Ok(IoCommand::FetchPollEvents(height, poll_creations)) => {
                 match polls::get_block_results(&lcd_url, height) {
                     Ok(block_results) => {
+                        let mut complete_polls = Vec::new();
+
+                        // Handle ConfirmGatewayTxsStarted events (batch, uses poll_mappings)
                         let poll_mappings =
                             polls::extract_poll_mappings_from_events(&block_results);
 
-                        if !poll_mappings.is_empty() {
-                            let mut complete_polls = Vec::new();
+                        for poll_mapping in poll_mappings {
+                            let tx_id_hex = hex::encode(&poll_mapping.tx_id);
 
-                            for poll_mapping in poll_mappings {
-                                let tx_id_hex = hex::encode(&poll_mapping.tx_id);
-
-                                if let Some(creation) =
-                                    poll_creations.iter().find(|pc| pc.tx == tx_id_hex)
-                                {
+                            if let Some(creation) =
+                                poll_creations.iter().find(|pc| pc.tx() == tx_id_hex)
+                            {
+                                if let PollCreation::GatewayTx { chain, .. } = creation {
                                     complete_polls.push(Poll {
                                         poll_id: poll_mapping.poll_id,
+                                        poll_type: PollType::GatewayTx {
+                                            chain: chain.clone(),
+                                            tx: tx_id_hex.clone(),
+                                        },
                                         votes: vec![],
-                                        expiry_height: creation.expiry_height,
-                                        chain: creation.chain.clone(),
-                                        tx: tx_id_hex,
+                                        expiry_height: creation.expiry_height(),
                                     });
-                                } else {
-                                    warn!(
-                                        "Got poll_mapping for tx_id={} but no matching PollCreation",
-                                        tx_id_hex
-                                    );
                                 }
+                            } else {
+                                warn!(
+                                    "Got poll_mapping for tx_id={} but no matching PollCreation",
+                                    tx_id_hex
+                                );
                             }
+                        }
 
-                            if !complete_polls.is_empty() {
-                                msg_tx
-                                    .send(ProcessingMessage::IoResult(IoResult::PollMappings(
-                                        height,
-                                        complete_polls,
-                                    )))
-                                    .unwrap();
+                        // Handle ConfirmDepositStarted events (single poll, uses participants)
+                        let deposit_participants = polls::extract_poll_participants_from_events(
+                            &block_results,
+                            "axelar.evm.v1beta1.ConfirmDepositStarted",
+                        );
+
+                        for participant in deposit_participants {
+                            let tx_id_hex = hex::encode(&participant.tx_id);
+
+                            if let Some(creation) =
+                                poll_creations.iter().find(|pc| pc.tx() == tx_id_hex)
+                            {
+                                if let PollCreation::Deposit {
+                                    chain,
+                                    burner_address,
+                                    ..
+                                } = creation
+                                {
+                                    complete_polls.push(Poll {
+                                        poll_id: participant.poll_id,
+                                        poll_type: PollType::Deposit {
+                                            chain: chain.clone(),
+                                            tx: tx_id_hex.clone(),
+                                            burner_address: burner_address.clone(),
+                                        },
+                                        votes: vec![],
+                                        expiry_height: creation.expiry_height(),
+                                    });
+                                }
+                            } else {
+                                warn!(
+                                    "Got deposit poll for tx_id={} but no matching PollCreation",
+                                    tx_id_hex
+                                );
                             }
+                        }
+
+                        if !complete_polls.is_empty() {
+                            msg_tx
+                                .send(ProcessingMessage::IoResult(IoResult::PollMappings(
+                                    height,
+                                    complete_polls,
+                                )))
+                                .unwrap();
                         }
                     }
                     Err(e) => {
@@ -323,55 +474,97 @@ fn processing_loop(
                         }
                     }
                 }
-                IoResult::NewPolls(height, confirm_reqs) => {
-                    debug!("Sending FetchBlockResults command for height {}", height);
-                    let mut poll_creations: Vec<PollCreation> = Vec::new();
+                IoResult::NewPollRequests(height, poll_requests) => {
+                    debug!("Sending FetchPollEvents command for height {}", height);
 
-                    for req in &confirm_reqs {
-                        info!(
-                            "Height {}: ConfirmGatewayTxsRequest received for chain '{}' with {} tx(s) - this will emit ConfirmGatewayTxsStarted event",
-                            height,
-                            req.chain,
-                            req.tx_ids.len()
-                        );
-                        if let Some(params) = chain_params.get(&req.chain.to_lowercase()) {
-                            let revote_period =
-                                params.revote_locking_period.parse::<u64>().unwrap();
-                            let expiry_height = height as u64 + revote_period;
-                            assert_eq!(req.tx_ids.len(), 1);
-                            for tx_id in &req.tx_ids {
-                                let encoded_tx_id = hex::encode(tx_id);
-                                info!(
-                                    "  ConfirmGatewayTxsStarted: chain={}, tx_id={}, expiry_height={}",
-                                    req.chain, encoded_tx_id, expiry_height
-                                );
-                                let poll = PollCreation {
-                                    expiry_height,
-                                    chain: req.chain.clone(),
-                                    tx: encoded_tx_id,
-                                };
-                                poll_creations.push(poll);
+                    let mut poll_creations = Vec::new();
+
+                    // Convert PollRequest to PollCreation by calculating expiry heights
+                    for request in poll_requests {
+                        match request {
+                            PollRequest::GatewayTx { chain, tx } => {
+                                if let Some(params) = chain_params.get(&chain.to_lowercase()) {
+                                    let revote_period =
+                                        params.revote_locking_period.parse::<u64>().unwrap();
+                                    let expiry_height = height as u64 + revote_period;
+                                    info!(
+                                        "Height {}: ConfirmGatewayTxsRequest - chain={}, tx_id={}, expiry_height={}",
+                                        height, chain, tx, expiry_height
+                                    );
+                                    poll_creations.push(PollCreation::GatewayTx {
+                                        tx,
+                                        chain,
+                                        expiry_height,
+                                    });
+                                } else {
+                                    error!(
+                                        "Chain params not available for chain: {}. Skipping poll creation.",
+                                        chain
+                                    );
+                                }
                             }
-                        } else {
-                            error!(
-                                "Chain params not available for chain: {}. Skipping poll creation.",
-                                req.chain
-                            );
+                            PollRequest::Deposit {
+                                chain,
+                                tx,
+                                burner_address,
+                            } => {
+                                if let Some(params) = chain_params.get(&chain.to_lowercase()) {
+                                    let revote_period =
+                                        params.revote_locking_period.parse::<u64>().unwrap();
+                                    let expiry_height = height as u64 + revote_period;
+                                    info!(
+                                        "Height {}: ConfirmDepositRequest - chain={}, tx_id={}, burner={}, expiry_height={}",
+                                        height, chain, tx, burner_address, expiry_height
+                                    );
+                                    poll_creations.push(PollCreation::Deposit {
+                                        tx,
+                                        chain,
+                                        burner_address,
+                                        expiry_height,
+                                    });
+                                } else {
+                                    error!(
+                                        "Chain params not available for chain: {}. Skipping poll creation.",
+                                        chain
+                                    );
+                                }
+                            }
                         }
                     }
+
                     cmd_tx
-                        .send(IoCommand::FetchBlockResults(height, poll_creations))
+                        .send(IoCommand::FetchPollEvents(height, poll_creations))
                         .unwrap();
                 }
                 IoResult::PollMappings(height, complete_polls) => {
                     for poll in complete_polls {
-                        info!(
-                            "Height {}: ConfirmGatewayTxsStarted event - tx_id={}, poll_id={}, chain={}, expiry_height={}",
-                            height, poll.tx, poll.poll_id, poll.chain, poll.expiry_height
-                        );
+                        match &poll.poll_type {
+                            PollType::GatewayTx { chain, tx } => {
+                                info!(
+                                    "Height {}: ConfirmGatewayTxsStarted event - tx_id={}, poll_id={}, chain={}, expiry_height={}",
+                                    height, tx, poll.poll_id, chain, poll.expiry_height
+                                );
+                            }
+                            PollType::Deposit {
+                                chain,
+                                tx,
+                                burner_address,
+                            } => {
+                                info!(
+                                    "Height {}: ConfirmDepositStarted event - tx_id={}, poll_id={}, chain={}, burner={}, expiry_height={}",
+                                    height,
+                                    tx,
+                                    poll.poll_id,
+                                    chain,
+                                    burner_address,
+                                    poll.expiry_height
+                                );
+                            }
+                        }
 
-                        poll_id_to_tx_id.insert(poll.poll_id, poll.tx.clone());
-                        polls.insert(poll.tx.clone(), poll);
+                        let tx_id = poll.tx().to_string();
+                        poll_id_to_tx_id.insert(poll.poll_id, tx_id.clone());
+                        polls.insert(tx_id, poll);
                     }
                 }
                 IoResult::Votes(votes) => {
@@ -389,8 +582,8 @@ fn processing_loop(
                             p.votes.push(vote);
                         } else {
                             warn!(
-                                "Got vote on tx_id={} poll_id={} and we don't know about it. It's fine if this program just started (~90s)",
-                                vote.tx_id, vote.poll_id
+                                "Got vote on poll_id={} and we don't know about it. It's fine if this program just started (~90s)",
+                                vote.poll_id
                             );
                         }
                     }

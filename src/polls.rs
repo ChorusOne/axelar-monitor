@@ -27,7 +27,7 @@ pub struct TendermintEvent {
 #[derive(Deserialize, Debug)]
 pub struct EventAttribute {
     pub key: String,
-    pub value: String,
+    pub value: Option<String>,
 }
 
 pub fn get_block_results(
@@ -57,15 +57,17 @@ fn extract_poll_mappings_from_json(event: &TendermintEvent) -> Vec<PollMapping> 
         if let Some(key_bytes) = key_decoded
             && key_bytes == b"poll_mappings"
         {
-            if let Ok(value_bytes) = general_purpose::STANDARD.decode(&attr.value) {
-                if let Ok(value_str) = String::from_utf8(value_bytes) {
-                    if let Ok(mappings) = serde_json::from_str::<Vec<PollMappingJson>>(&value_str) {
-                        for mapping in mappings {
-                            if let Ok(poll_id) = mapping.poll_id.parse::<u64>() {
-                                poll_mappings.push(PollMapping {
-                                    tx_id: mapping.tx_id,
-                                    poll_id,
-                                });
+            if let Some(value) = &attr.value {
+                if let Ok(value_bytes) = general_purpose::STANDARD.decode(value) {
+                    if let Ok(value_str) = String::from_utf8(value_bytes) {
+                        if let Ok(mappings) = serde_json::from_str::<Vec<PollMappingJson>>(&value_str) {
+                            for mapping in mappings {
+                                if let Ok(poll_id) = mapping.poll_id.parse::<u64>() {
+                                    poll_mappings.push(PollMapping {
+                                        tx_id: mapping.tx_id,
+                                        poll_id,
+                                    });
+                                }
                             }
                         }
                     }
@@ -90,4 +92,69 @@ pub fn extract_poll_mappings_from_events(block_results: &BlockResults) -> Vec<Po
     }
 
     poll_mappings
+}
+
+#[derive(Debug)]
+pub struct PollParticipants {
+    pub tx_id: Vec<u8>,
+    pub poll_id: u64,
+    // TODO: extract asset from ConfirmDepositStarted event if needed
+}
+
+pub fn extract_poll_participants_from_events(
+    block_results: &BlockResults,
+    event_type: &str,
+) -> Vec<PollParticipants> {
+    let mut participants = Vec::new();
+    if let Some(txs_results) = &block_results.txs_results {
+        for tx_result in txs_results {
+            if let Some(events) = &tx_result.events {
+                for event in events {
+                    if event.r#type == event_type {
+                        if let Some(part) = extract_poll_participants_from_event(event) {
+                            participants.push(part);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    participants
+}
+
+fn extract_poll_participants_from_event(event: &TendermintEvent) -> Option<PollParticipants> {
+    let mut tx_id: Option<Vec<u8>> = None;
+    let mut poll_id: Option<u64> = None;
+
+    for attr in &event.attributes {
+        if let Ok(key_bytes) = general_purpose::STANDARD.decode(&attr.key) {
+            if let Ok(key_str) = String::from_utf8(key_bytes) {
+                match key_str.as_str() {
+                    "tx_id" => {
+                        if let Some(value) = &attr.value {
+                            if let Ok(value_bytes) = general_purpose::STANDARD.decode(value) {
+                                tx_id = Some(value_bytes);
+                            }
+                        }
+                    }
+                    "participants.poll_id" => {
+                        if let Some(value) = &attr.value {
+                            if let Ok(value_bytes) = general_purpose::STANDARD.decode(value) {
+                                if let Ok(value_str) = String::from_utf8(value_bytes) {
+                                    poll_id = value_str.parse::<u64>().ok();
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    if let (Some(tx_id), Some(poll_id)) = (tx_id, poll_id) {
+        Some(PollParticipants { tx_id, poll_id })
+    } else {
+        None
+    }
 }

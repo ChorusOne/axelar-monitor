@@ -5,7 +5,7 @@ use serde::Deserialize;
 
 use crate::PollVote;
 use crate::generated::axelar::evm::v1beta1::event::Event;
-use crate::generated::axelar::evm::v1beta1::{ConfirmGatewayTxsRequest, VoteEvents};
+use crate::generated::axelar::evm::v1beta1::{ConfirmDepositRequest, ConfirmGatewayTxsRequest, VoteEvents};
 use crate::generated::axelar::reward::v1beta1::RefundMsgRequest;
 use crate::generated::axelar::tss::v1beta1::HeartBeatRequest;
 use crate::generated::axelar::vote::v1beta1::VoteRequest;
@@ -112,6 +112,19 @@ pub fn extract_confirm_gateway_txs_requests(txs: &[TxBody]) -> Vec<ConfirmGatewa
                 .filter(|msg| msg.type_url == "/axelar.evm.v1beta1.ConfirmGatewayTxsRequest")
                 .filter_map(|msg| ConfirmGatewayTxsRequest::decode(&msg.value[..]).ok())
                 .collect::<Vec<ConfirmGatewayTxsRequest>>()
+        })
+        .flatten()
+        .collect()
+}
+
+pub fn extract_confirm_deposit_requests(txs: &[TxBody]) -> Vec<ConfirmDepositRequest> {
+    txs.iter()
+        .map(|tx| {
+            tx.messages
+                .iter()
+                .filter(|msg| msg.type_url == "/axelar.evm.v1beta1.ConfirmDepositRequest")
+                .filter_map(|msg| ConfirmDepositRequest::decode(&msg.value[..]).ok())
+                .collect::<Vec<ConfirmDepositRequest>>()
         })
         .flatten()
         .collect()
