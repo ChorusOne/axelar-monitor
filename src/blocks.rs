@@ -6,7 +6,8 @@ use serde::Deserialize;
 use crate::PollVote;
 use crate::generated::axelar::evm::v1beta1::event::Event;
 use crate::generated::axelar::evm::v1beta1::{
-    ConfirmDepositRequest, ConfirmGatewayTxRequest, ConfirmGatewayTxsRequest, VoteEvents,
+    ConfirmDepositRequest, ConfirmGatewayTxRequest, ConfirmGatewayTxsRequest,
+    ConfirmTransferKeyRequest, VoteEvents,
 };
 use crate::generated::axelar::reward::v1beta1::RefundMsgRequest;
 use crate::generated::axelar::tss::v1beta1::HeartBeatRequest;
@@ -110,6 +111,7 @@ pub enum RawPollRequests {
     GatewayTx(ConfirmGatewayTxRequest),
     GatewayTxs(ConfirmGatewayTxsRequest),
     Deposit(ConfirmDepositRequest),
+    TransferKey(ConfirmTransferKeyRequest),
 }
 pub fn extract_raw_poll_requests(txs: &[TxBody]) -> Vec<RawPollRequests> {
     txs.iter()
@@ -130,6 +132,11 @@ pub fn extract_raw_poll_requests(txs: &[TxBody]) -> Vec<RawPollRequests> {
                     "/axelar.evm.v1beta1.ConfirmDepositRequest" => Some(RawPollRequests::Deposit(
                         ConfirmDepositRequest::decode(&msg.value[..]).unwrap(),
                     )),
+                    "/axelar.evm.v1beta1.ConfirmTransferKeyRequest" => {
+                        Some(RawPollRequests::TransferKey(
+                            ConfirmTransferKeyRequest::decode(&msg.value[..]).unwrap(),
+                        ))
+                    }
                     _ => None,
                 })
                 .collect::<Vec<RawPollRequests>>()

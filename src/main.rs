@@ -100,6 +100,10 @@ enum PollRequest {
         chain: String,
         burner_address: String,
     },
+    TransferKey {
+        tx: String,
+        chain: String,
+    },
 }
 
 impl PollRequest {
@@ -107,6 +111,7 @@ impl PollRequest {
         match self {
             PollRequest::GatewayTx { tx, .. } => tx,
             PollRequest::Deposit { tx, .. } => tx,
+            PollRequest::TransferKey { tx, .. } => tx,
         }
     }
 
@@ -114,6 +119,7 @@ impl PollRequest {
         match self {
             PollRequest::GatewayTx { chain, .. } => chain,
             PollRequest::Deposit { chain, .. } => chain,
+            PollRequest::TransferKey { chain, .. } => chain,
         }
     }
 }
@@ -130,6 +136,10 @@ enum PollType {
         burner_address: String,
         // TODO: add asset field if needed (extract from ConfirmDepositStarted event)
     },
+    TransferKey {
+        chain: String,
+        tx: String,
+    },
 }
 
 #[derive(Debug)]
@@ -145,6 +155,11 @@ enum PollCreation {
         chain: String,
         burner_address: String,
     },
+    TransferKey {
+        tx: String,
+        expiry_height: u64,
+        chain: String,
+    },
 }
 
 impl PollCreation {
@@ -152,6 +167,7 @@ impl PollCreation {
         match self {
             PollCreation::GatewayTx { tx, .. } => tx,
             PollCreation::Deposit { tx, .. } => tx,
+            PollCreation::TransferKey { tx, .. } => tx,
         }
     }
 
@@ -159,6 +175,7 @@ impl PollCreation {
         match self {
             PollCreation::GatewayTx { expiry_height, .. } => *expiry_height,
             PollCreation::Deposit { expiry_height, .. } => *expiry_height,
+            PollCreation::TransferKey { expiry_height, .. } => *expiry_height,
         }
     }
 
@@ -166,6 +183,7 @@ impl PollCreation {
         match self {
             PollCreation::GatewayTx { chain, .. } => chain,
             PollCreation::Deposit { chain, .. } => chain,
+            PollCreation::TransferKey { chain, .. } => chain,
         }
     }
 }
@@ -183,6 +201,7 @@ impl Poll {
         match &self.poll_type {
             PollType::GatewayTx { tx, .. } => tx,
             PollType::Deposit { tx, .. } => tx,
+            PollType::TransferKey { tx, .. } => tx,
         }
     }
 
@@ -190,6 +209,7 @@ impl Poll {
         match &self.poll_type {
             PollType::GatewayTx { chain, .. } => chain,
             PollType::Deposit { chain, .. } => chain,
+            PollType::TransferKey { chain, .. } => chain,
         }
     }
 }
@@ -283,6 +303,12 @@ fn io_thread_loop(
                                         chain: d.chain.clone(),
                                         burner_address: hex::encode(&d.burner_address),
                                     }],
+                                    RawPollRequests::TransferKey(t) => {
+                                        vec![PollRequest::TransferKey {
+                                            tx: hex::encode(&t.tx_id),
+                                            chain: t.chain.clone(),
+                                        }]
+                                    }
                                 })
                                 .flatten()
                                 .collect();
@@ -448,6 +474,46 @@ fn io_thread_loop(
                             }
                         }
 
+                        // Handle ConfirmKeyTransferStarted events (single poll, uses participants)
+                        let transfer_key_participants =
+                            polls::extract_poll_participants_from_events(
+                                &block_results,
+                                "axelar.evm.v1beta1.ConfirmKeyTransferStarted",
+                            );
+
+                        for participant in transfer_key_participants {
+                            let tx_id_hex = hex::encode(&participant.tx_id);
+
+                            if let Some(creation) =
+                                poll_creations.iter().find(|pc| pc.tx() == tx_id_hex)
+                            {
+                                if let PollCreation::TransferKey { chain, .. } = creation {
+                                    complete_polls.push(Poll {
+                                        poll_id: participant.poll_id,
+                                        poll_type: PollType::TransferKey {
+                                            chain: chain.clone(),
+                                            tx: tx_id_hex.clone(),
+                                        },
+                                        votes: vec![],
+                                        expiry_height: creation.expiry_height(),
+                                    });
+                                    info!(
+                                        "Height {}: ConfirmKeyTransferStarted event - tx_id={}, poll_id={}, chain={}, expiry_height={}",
+                                        height,
+                                        tx_id_hex,
+                                        participant.poll_id,
+                                        chain,
+                                        creation.expiry_height()
+                                    );
+                                }
+                            } else {
+                                warn!(
+                                    "Got transfer key poll for tx_id={} but no matching PollCreation",
+                                    tx_id_hex
+                                );
+                            }
+                        }
+
                         if !complete_polls.is_empty() {
                             msg_tx
                                 .send(ProcessingMessage::IoResult(IoResult::PollMappings(
@@ -541,52 +607,42 @@ fn processing_loop(
                             request.tx(),
                             request.chain()
                         );
-                        match request {
-                            PollRequest::GatewayTx { chain, tx } => {
-                                if let Some(params) = chain_params.get(&chain.to_lowercase()) {
-                                    let revote_period = params.revote_locking_period as u64;
-                                    let expiry_height = height as u64 + revote_period;
-                                    info!(
-                                        "Height {}: ConfirmGatewayTxsRequest - chain={}, tx_id={}, expiry_height={}",
-                                        height, chain, tx, expiry_height
-                                    );
-                                    poll_creations.push(PollCreation::GatewayTx {
+                        let chain = request.chain();
+                        if let Some(params) = chain_params.get(&chain.to_lowercase()) {
+                            let revote_period = params.revote_locking_period as u64;
+                            let expiry_height = height as u64 + revote_period;
+
+                            let pc = match request {
+                                PollRequest::GatewayTx { chain, tx } => PollCreation::GatewayTx {
+                                    tx,
+                                    chain,
+                                    expiry_height,
+                                },
+                                PollRequest::Deposit {
+                                    chain,
+                                    tx,
+                                    burner_address,
+                                } => PollCreation::Deposit {
+                                    tx,
+                                    chain,
+                                    burner_address,
+                                    expiry_height,
+                                },
+                                PollRequest::TransferKey { chain, tx } => {
+                                    PollCreation::TransferKey {
                                         tx,
                                         chain,
                                         expiry_height,
-                                    });
-                                } else {
-                                    error!(
-                                        "Chain params not available for chain: {}. Skipping poll creation.",
-                                        chain
-                                    );
+                                    }
                                 }
-                            }
-                            PollRequest::Deposit {
-                                chain,
-                                tx,
-                                burner_address,
-                            } => {
-                                if let Some(params) = chain_params.get(&chain.to_lowercase()) {
-                                    let revote_period = params.revote_locking_period as u64;
-                                    let expiry_height = height as u64 + revote_period;
-                                    info!(
-                                        "Height {}: ConfirmDepositRequest - chain={}, tx_id={}, burner={}, expiry_height={}",
-                                        height, chain, tx, burner_address, expiry_height
-                                    );
-                                    poll_creations.push(PollCreation::Deposit {
-                                        tx,
-                                        chain,
-                                        burner_address,
-                                        expiry_height,
-                                    });
-                                } else {
-                                    error!(
-                                        "Chain params not available for chain: {}. Skipping poll creation.",
-                                        chain
-                                    );
-                                }
-                            }
+                            };
+                            info!("Poll complete {:?}", pc);
+                            poll_creations.push(pc);
+                        } else {
+                            error!(
+                                "Chain params not available for chain: {}. Skipping poll creation.",
+                                chain
+                            );
                         }
                     }
 
@@ -623,6 +679,12 @@ fn processing_loop(
                                     chain,
                                     burner_address,
                                     poll.expiry_height
+                                );
+                            }
+                            PollType::TransferKey { chain, tx } => {
+                                info!(
+                                    "Height {}: ConfirmKeyTransferStarted event - tx_id={}, poll_id={}, chain={}, expiry_height={}",
+                                    height, tx, poll.poll_id, chain, poll.expiry_height
                                 );
                             }
                         }
