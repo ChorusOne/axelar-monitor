@@ -4,6 +4,7 @@ use std::fs;
 #[derive(Deserialize, Debug)]
 pub struct Config {
     pub rpc_url: String,
+    pub lcd_url: String,
     pub poll_interval_seconds: u64,
     pub metrics_port: u16,
     pub broadcaster: Vec<Broadcaster>,

@@ -14,6 +14,7 @@ mod blocks;
 mod config;
 mod generated;
 mod metrics;
+mod polls;
 
 #[derive(Debug, Clone, Copy)]
 enum Height {
@@ -23,6 +24,7 @@ enum Height {
 
 enum IoCommand {
     FetchBlock(Height),
+    FetchBlockResults(u64, Vec<PollCreation>),
     FetchChainList,
     FetchChainParams(String),
     #[allow(dead_code)]
@@ -33,6 +35,7 @@ enum IoResult {
     Block(u64),
     Heartbeats(u64, Vec<String>),
     NewPolls(u64, Vec<ConfirmGatewayTxsRequest>),
+    PollMappings(u64, Vec<Poll>),
     Votes(Vec<PollVote>),
     FetchError(Height, String),
     ChainList(Vec<String>),
@@ -79,11 +82,19 @@ struct PollVote {
 }
 
 #[derive(Debug)]
+struct PollCreation {
+    tx: String,
+    expiry_height: u64,
+    chain: String,
+}
+
+#[derive(Debug)]
 struct Poll {
-    poll_id: Option<u64>,
+    poll_id: u64,
     votes: Vec<PollVote>,
     expiry_height: u64,
     chain: String,
+    tx: String,
 }
 
 fn get_block(base_url: &str, height: Height) -> Result<(Block, u64), Box<dyn std::error::Error>> {
@@ -124,6 +135,7 @@ fn get_chain_params(
 
 fn io_thread_loop(
     rpc_url: String,
+    lcd_url: String,
     cmd_rx: mpsc::Receiver<IoCommand>,
     msg_tx: mpsc::Sender<ProcessingMessage>,
 ) {
@@ -152,7 +164,7 @@ fn io_thread_loop(
                                     .unwrap();
                             }
 
-                            // TODO ConfirmTransferKey
+                            // TODO (ConfirmGatewayTx, ConfirmDeposit, ConfirmToken, ConfirmTransferKey)
                             let confirm_reqs = blocks::extract_confirm_gateway_txs_requests(&txs);
                             if !confirm_reqs.is_empty() {
                                 msg_tx
@@ -210,6 +222,51 @@ fn io_thread_loop(
                     error!("Failed to fetch params for chain {}: {}", &chain, e);
                 }
             },
+            Ok(IoCommand::FetchBlockResults(height, poll_creations)) => {
+                match polls::get_block_results(&lcd_url, height) {
+                    Ok(block_results) => {
+                        let poll_mappings =
+                            polls::extract_poll_mappings_from_events(&block_results);
+
+                        if !poll_mappings.is_empty() {
+                            let mut complete_polls = Vec::new();
+
+                            for poll_mapping in poll_mappings {
+                                let tx_id_hex = hex::encode(&poll_mapping.tx_id);
+
+                                if let Some(creation) =
+                                    poll_creations.iter().find(|pc| pc.tx == tx_id_hex)
+                                {
+                                    complete_polls.push(Poll {
+                                        poll_id: poll_mapping.poll_id,
+                                        votes: vec![],
+                                        expiry_height: creation.expiry_height,
+                                        chain: creation.chain.clone(),
+                                        tx: tx_id_hex,
+                                    });
+                                } else {
+                                    warn!(
+                                        "Got poll_mapping for tx_id={} but no matching PollCreation",
+                                        tx_id_hex
+                                    );
+                                }
+                            }
+
+                            if !complete_polls.is_empty() {
+                                msg_tx
+                                    .send(ProcessingMessage::IoResult(IoResult::PollMappings(
+                                        height,
+                                        complete_polls,
+                                    )))
+                                    .unwrap();
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to fetch block results for height {}: {}", height, e);
+                    }
+                }
+            }
             Err(_) => break,
         }
     }
@@ -267,7 +324,16 @@ fn processing_loop(
                     }
                 }
                 IoResult::NewPolls(height, confirm_reqs) => {
+                    debug!("Sending FetchBlockResults command for height {}", height);
+                    let mut poll_creations: Vec<PollCreation> = Vec::new();
+
                     for req in &confirm_reqs {
+                        info!(
+                            "Height {}: ConfirmGatewayTxsRequest received for chain '{}' with {} tx(s) - this will emit ConfirmGatewayTxsStarted event",
+                            height,
+                            req.chain,
+                            req.tx_ids.len()
+                        );
                         if let Some(params) = chain_params.get(&req.chain.to_lowercase()) {
                             let revote_period =
                                 params.revote_locking_period.parse::<u64>().unwrap();
@@ -275,18 +341,16 @@ fn processing_loop(
                             assert_eq!(req.tx_ids.len(), 1);
                             for tx_id in &req.tx_ids {
                                 let encoded_tx_id = hex::encode(tx_id);
-                                // TODO: We don't know the poll_id yet - it's assigned by the chain
-                                // when the ConfirmGatewayTxsRequest is processed. We need to either:
-                                // 1. Query the chain state to get the poll_id for this tx_id, or
-                                // 2. Wait for the first vote to come in and learn the poll_id then
-                                let poll = Poll {
-                                    poll_id: None,
-                                    votes: vec![],
+                                info!(
+                                    "  ConfirmGatewayTxsStarted: chain={}, tx_id={}, expiry_height={}",
+                                    req.chain, encoded_tx_id, expiry_height
+                                );
+                                let poll = PollCreation {
                                     expiry_height,
                                     chain: req.chain.clone(),
+                                    tx: encoded_tx_id,
                                 };
-                                info!("New poll: {encoded_tx_id} {poll:?}");
-                                polls.insert(encoded_tx_id, poll);
+                                poll_creations.push(poll);
                             }
                         } else {
                             error!(
@@ -294,6 +358,20 @@ fn processing_loop(
                                 req.chain
                             );
                         }
+                    }
+                    cmd_tx
+                        .send(IoCommand::FetchBlockResults(height, poll_creations))
+                        .unwrap();
+                }
+                IoResult::PollMappings(height, complete_polls) => {
+                    for poll in complete_polls {
+                        info!(
+                            "Height {}: ConfirmGatewayTxsStarted event - tx_id={}, poll_id={}, chain={}, expiry_height={}",
+                            height, poll.tx, poll.poll_id, poll.chain, poll.expiry_height
+                        );
+
+                        poll_id_to_tx_id.insert(poll.poll_id, poll.tx.clone());
+                        polls.insert(poll.tx.clone(), poll);
                     }
                 }
                 IoResult::Votes(votes) => {
@@ -308,10 +386,6 @@ fn processing_loop(
 
                         if let Some(p) = poll {
                             info!("vote: {:?}", vote);
-                            if p.poll_id.is_none() {
-                                p.poll_id = Some(vote.poll_id);
-                                poll_id_to_tx_id.insert(vote.poll_id, vote.tx_id.clone());
-                            }
                             p.votes.push(vote);
                         } else {
                             warn!(
@@ -349,12 +423,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (msg_tx, msg_rx) = mpsc::channel::<ProcessingMessage>();
 
     let rpc_url = config.rpc_url.clone();
+    let lcd_url = config.lcd_url.clone();
     let poll_interval = config.poll_interval_seconds;
     let metrics_port = config.metrics_port;
 
     let msg_tx_io = msg_tx.clone();
     thread::spawn(move || {
-        io_thread_loop(rpc_url, cmd_rx, msg_tx_io);
+        io_thread_loop(rpc_url, lcd_url, cmd_rx, msg_tx_io);
     });
 
     let feeder_tx = cmd_tx.clone();
@@ -374,9 +449,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             feeder_tx
                 .send(IoCommand::FetchBlock(Height::Specific(height)))
                 .unwrap();
+            std::thread::sleep(Duration::from_secs(1));
             feeder_tx
                 .send(IoCommand::FetchBlock(Height::Specific(height + 1)))
                 .unwrap();
+            // FetchBlockResults -- FIXME -- Shutdown should set a flag and only quit on empty
+            std::thread::sleep(Duration::from_secs(1));
             feeder_tx.send(IoCommand::Shutdown).unwrap();
         });
     } else {
