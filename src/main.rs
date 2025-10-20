@@ -1,69 +1,13 @@
 use axelar_watch::{
     Config, Height, IoCommand, IoResponse, ProcessingMessage, ProcessingResponse, ProcessingState,
-    process_single_message,
+    process_single_message, process_single_io_command,
 };
-use log::{error, info};
+use log::info;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
 mod metrics;
-
-use axelar_watch::IoResult;
-use axelar_watch::rpc::{get_block, get_block_results, get_chain_list, get_chain_params, get_head};
-
-fn process_single_io_command(cmd: IoCommand, rpc_url: &str, lcd_url: &str) -> Vec<IoResponse> {
-    match cmd {
-        IoCommand::FetchBlock(height) => match get_block(rpc_url, height) {
-            Ok((block, height)) => vec![IoResponse::SendMessage(ProcessingMessage::IoResult(
-                IoResult::Block(height, block),
-            ))],
-            Err(e) => vec![IoResponse::SendMessage(ProcessingMessage::IoResult(
-                IoResult::FetchError(height, e.to_string()),
-            ))],
-        },
-        IoCommand::FetchBlockResults(height) => match get_block_results(lcd_url, height) {
-            Ok(block_results) => vec![IoResponse::SendMessage(ProcessingMessage::IoResult(
-                IoResult::BlockResults(height, block_results),
-            ))],
-            Err(e) => {
-                error!("Failed to fetch block results for height {}: {}", height, e);
-                vec![]
-            }
-        },
-        IoCommand::FetchChainList => match get_chain_list(rpc_url) {
-            Ok(chains) => {
-                info!("fetched chain list: {} chains", chains.len());
-                vec![IoResponse::SendMessage(ProcessingMessage::IoResult(
-                    IoResult::ChainList(chains),
-                ))]
-            }
-            Err(e) => {
-                error!("Failed to fetch chain list: {}", e);
-                vec![]
-            }
-        },
-        IoCommand::FetchHead => match get_head(rpc_url) {
-            Ok(height) => vec![IoResponse::SendMessage(ProcessingMessage::IoResult(
-                IoResult::Head(height),
-            ))],
-            Err(e) => {
-                error!("Failed to fetch chain head: {}", e);
-                vec![]
-            }
-        },
-        IoCommand::Shutdown => vec![IoResponse::Shutdown],
-        IoCommand::FetchChainParams(chain) => match get_chain_params(rpc_url, &chain) {
-            Ok(params) => vec![IoResponse::SendMessage(ProcessingMessage::IoResult(
-                IoResult::ChainParams(params.into()),
-            ))],
-            Err(e) => {
-                error!("Failed to fetch params for chain {}: {}", &chain, e);
-                vec![]
-            }
-        },
-    }
-}
 
 fn io_thread_loop(
     rpc_url: String,

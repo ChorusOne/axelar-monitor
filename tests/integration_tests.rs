@@ -1,6 +1,6 @@
 use axelar_watch::{
-    blocks, config, polls, rpc, process_single_message, Config, Height, IoCommand, IoResponse,
-    ProcessingMessage, ProcessingResponse, ProcessingState,
+    Config, Height, IoCommand, IoResponse, ProcessingMessage, ProcessingResponse, ProcessingState,
+    blocks, config, polls, process_single_message, rpc,
 };
 
 fn load_test_block_from_json(test_type: &str, height: u64) -> blocks::Block {
