@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 base64 = "0.22.1"
-cosmos-sdk-proto = "0.27.0"
+cosmos-sdk-proto = { version = "0.27.0", default-features = false, features = [] }
 hex = "0.4"
 log = "0.4.28"
 prost = "0.13"
