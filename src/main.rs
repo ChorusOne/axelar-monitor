@@ -238,34 +238,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
-    if let Some(height) = single_block {
-        thread::spawn(move || {
+    thread::spawn(move || {
+        // start at specific height
+        feeder_tx.send(IoCommand::FetchHead).unwrap();
+        if let Some(height) = single_block {
+            println!("Starting to fetch from height {height}");
             feeder_tx
                 .send(IoCommand::FetchBlock(Height::Specific(height)))
                 .unwrap();
-            // wait for block_result data to be fetched from rpc
-            std::thread::sleep(Duration::from_secs(2));
-            feeder_tx
-                .send(IoCommand::FetchBlock(Height::Specific(height + 1)))
-                .unwrap();
-            // FetchBlockResults -- FIXME -- Shutdown should set a flag and only quit on empty
-            std::thread::sleep(Duration::from_secs(1));
-            feeder_tx.send(IoCommand::Shutdown).unwrap();
-        });
-    } else {
-        thread::spawn(move || {
+        }
+        loop {
+            thread::sleep(Duration::from_secs(poll_interval));
             feeder_tx.send(IoCommand::FetchHead).unwrap();
-            loop {
-                thread::sleep(Duration::from_secs(poll_interval));
-                feeder_tx.send(IoCommand::FetchHead).unwrap();
-            }
-        });
-        let msg_tx_metrics = msg_tx.clone();
-        thread::spawn(move || {
-            metrics::metrics_server_loop(msg_tx_metrics, metrics_port);
-        });
-    }
+        }
+    });
+    let msg_tx_metrics = msg_tx.clone();
+    thread::spawn(move || {
+        metrics::metrics_server_loop(msg_tx_metrics, metrics_port);
+    });
 
     processing_loop(msg_rx, cmd_tx, config)
 }
-

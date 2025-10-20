@@ -37,11 +37,19 @@ pub enum IoResult {
     Head(u64),
 }
 
+#[derive(Debug, Clone)]
+pub struct BroadcasterStats {
+    pub total_votes: u64,
+    pub disagreed_with_majority: u64,
+}
+
 #[derive(Debug)]
 pub struct MetricsSnapshot {
     pub last_heartbeat: HashMap<String, u64>,
     pub chain_height: u64,
     pub fetch_error_count: u64,
+    pub broadcaster_stats: HashMap<(String, String), BroadcasterStats>,
+    pub last_processed_height: u64,
 }
 
 pub enum ProcessingMessage {
@@ -64,6 +72,7 @@ pub struct ProcessingState {
     pub pending_poll_creations: HashMap<u64, Vec<PollCreation>>,
     pub chain_tip: u64,
     pub last_processed_height: u64,
+    pub broadcaster_stats: HashMap<(String, String), BroadcasterStats>,
 }
 
 impl ProcessingState {
@@ -80,6 +89,20 @@ impl ProcessingState {
             chain_params.insert(chain_param.name.to_lowercase(), chain_param.clone());
         }
 
+        let mut broadcaster_stats = HashMap::new();
+        for broadcaster in &config.broadcaster {
+            for chain_param in &config.chain_params {
+                let key = (broadcaster.name.clone(), chain_param.name.to_lowercase());
+                broadcaster_stats.insert(
+                    key,
+                    BroadcasterStats {
+                        total_votes: 0,
+                        disagreed_with_majority: 0,
+                    },
+                );
+            }
+        }
+
         ProcessingState {
             chain_height: 0,
             fetch_error_count: 0,
@@ -89,6 +112,50 @@ impl ProcessingState {
             pending_poll_creations: HashMap::new(),
             chain_tip: 0,
             last_processed_height: 0,
+            broadcaster_stats,
+        }
+    }
+}
+
+fn analyze_poll_completion(
+    poll: &Poll,
+    config: &Config,
+    broadcaster_stats: &mut HashMap<(String, String), BroadcasterStats>,
+) {
+    if poll.votes.is_empty() {
+        return;
+    }
+
+    let mut tx_id_counts: HashMap<&str, u64> = HashMap::new();
+    for vote in &poll.votes {
+        *tx_id_counts.entry(&vote.tx_id).or_insert(0) += 1;
+    }
+
+    let majority_tx_id = tx_id_counts
+        .iter()
+        .max_by_key(|(_, count)| *count)
+        .map(|(tx_id, _)| *tx_id);
+
+    if let Some(majority) = majority_tx_id {
+        let sender_to_broadcaster: HashMap<String, &str> = config
+            .broadcaster
+            .iter()
+            .map(|bc| (bc.address.clone(), bc.name.as_str()))
+            .collect();
+
+        for vote in &poll.votes {
+            if let Some(broadcaster_name) = sender_to_broadcaster.get(&vote.sender_id) {
+                let key = (broadcaster_name.to_string(), vote.chain.to_lowercase());
+                let stats = broadcaster_stats.entry(key).or_insert(BroadcasterStats {
+                    total_votes: 0,
+                    disagreed_with_majority: 0,
+                });
+
+                stats.total_votes += 1;
+                if vote.tx_id != majority {
+                    stats.disagreed_with_majority += 1;
+                }
+            }
         }
     }
 }
@@ -129,7 +196,24 @@ pub fn process_single_message(
             IoResult::Block(height, block) => {
                 state.chain_height = std::cmp::max(state.chain_height, height);
                 state.last_processed_height = height;
-                info!("at height {}", state.chain_height);
+                debug!(
+                    "got block height is {}, chain height is {}",
+                    height, state.chain_height
+                );
+
+                let expiring_poll_ids: Vec<_> = state
+                    .polls
+                    .iter()
+                    .filter(|(_, poll)| poll.expiry_height <= height as u64)
+                    .map(|(id, _)| *id)
+                    .collect();
+
+                for poll_id in expiring_poll_ids {
+                    if let Some(poll) = state.polls.get(&poll_id) {
+                        analyze_poll_completion(poll, config, &mut state.broadcaster_stats);
+                    }
+                }
+
                 state.polls.retain(|_, v| v.expiry_height > height as u64);
                 debug!("open polls after pruning {}", state.polls.len());
 
@@ -227,28 +311,46 @@ pub fn process_single_message(
                 vec![]
             }
             IoResult::ChainParams(chain) => {
-                state.chain_params.insert(chain.name.to_lowercase(), chain);
+                state
+                    .chain_params
+                    .insert(chain.name.to_lowercase(), chain.clone());
+
+                for broadcaster in &config.broadcaster {
+                    let key = (broadcaster.name.clone(), chain.name.to_lowercase());
+                    state
+                        .broadcaster_stats
+                        .entry(key)
+                        .or_insert(BroadcasterStats {
+                            total_votes: 0,
+                            disagreed_with_majority: 0,
+                        });
+                }
+
                 vec![]
             }
             IoResult::Head(height) => {
+                let old_tip = state.chain_tip;
                 state.chain_tip = height;
-                debug!("Chain tip is at height {}", height);
 
                 if state.last_processed_height == 0 {
                     info!("Initializing: starting from current chain tip {}", height);
                     state.last_processed_height = height - 1;
-                }
-
-                if state.chain_tip > state.last_processed_height {
+                    vec![ProcessingResponse::SendIoCommand(IoCommand::FetchBlock(
+                        Height::Specific(height),
+                    ))]
+                } else if state.chain_tip > state.last_processed_height
+                    && old_tip == state.last_processed_height
+                {
                     let next_height = state.last_processed_height + 1;
-                    if state.chain_tip > state.last_processed_height + 1 {
-                        info!("Chain tip is at {next_height}, will start to catch up now");
-                    }
+                    info!(
+                        "Chain advanced while caught up, fetching block {}",
+                        next_height
+                    );
                     vec![ProcessingResponse::SendIoCommand(IoCommand::FetchBlock(
                         Height::Specific(next_height),
                     ))]
                 } else {
-                    debug!("Caught up to chain tip");
+                    debug!("Chain tip updated to {}", height);
                     vec![]
                 }
             }
@@ -258,6 +360,8 @@ pub fn process_single_message(
                 last_heartbeat: state.last_heartbeat.clone(),
                 chain_height: state.chain_height,
                 fetch_error_count: state.fetch_error_count,
+                broadcaster_stats: state.broadcaster_stats.clone(),
+                last_processed_height: state.last_processed_height,
             };
             vec![ProcessingResponse::SendMetricsSnapshot(
                 response_tx,
