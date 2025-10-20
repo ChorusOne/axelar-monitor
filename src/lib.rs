@@ -147,7 +147,7 @@ pub fn process_single_message(
 
                         let mut responses = Vec::new();
                         if !data.poll_creations.is_empty() {
-                            info!(
+                            debug!(
                                 "Storing {} poll_creations for height {}, fetching block_results",
                                 data.poll_creations.len(),
                                 height
@@ -162,7 +162,7 @@ pub fn process_single_message(
 
                         for vote in data.votes {
                             if let Some(poll) = state.polls.get_mut(&vote.poll_id) {
-                                info!("vote: {:?}", vote);
+                                debug!("vote: {:?}", vote);
                                 poll.votes.push(vote);
                             } else {
                                 warn!(
@@ -193,7 +193,7 @@ pub fn process_single_message(
             }
             IoResult::BlockResults(height, block_results) => {
                 if let Some(poll_creations) = state.pending_poll_creations.remove(&height) {
-                    info!(
+                    debug!(
                         "Processing {} poll_creations with block_results for height {}",
                         poll_creations.len(),
                         height
@@ -241,7 +241,9 @@ pub fn process_single_message(
 
                 if state.chain_tip > state.last_processed_height {
                     let next_height = state.last_processed_height + 1;
-                    info!("Behind chain tip, fetching block {}", next_height);
+                    if state.chain_tip > state.last_processed_height + 1 {
+                        info!("Chain tip is at {next_height}, will start to catch up now");
+                    }
                     vec![ProcessingResponse::SendIoCommand(IoCommand::FetchBlock(
                         Height::Specific(next_height),
                     ))]

@@ -8,7 +8,7 @@ use crate::config::ChainParams;
 use crate::generated::axelar::evm::v1beta1::event::Event;
 use crate::generated::axelar::evm::v1beta1::{
     ConfirmDepositRequest, ConfirmGatewayTxRequest, ConfirmGatewayTxsRequest,
-    ConfirmTransferKeyRequest, VoteEvents,
+    ConfirmTokenRequest, ConfirmTransferKeyRequest, VoteEvents,
 };
 use crate::generated::axelar::reward::v1beta1::RefundMsgRequest;
 use crate::generated::axelar::tss::v1beta1::HeartBeatRequest;
@@ -100,6 +100,7 @@ pub enum RawPollRequests {
     GatewayTxs(ConfirmGatewayTxsRequest),
     Deposit(ConfirmDepositRequest),
     TransferKey(ConfirmTransferKeyRequest),
+    Token(ConfirmTokenRequest),
 }
 pub fn extract_raw_poll_requests(txs: &[TxBody]) -> Vec<RawPollRequests> {
     txs.iter()
@@ -126,6 +127,9 @@ pub fn extract_raw_poll_requests(txs: &[TxBody]) -> Vec<RawPollRequests> {
                             ConfirmTransferKeyRequest::decode(&msg.value[..]).unwrap(),
                         ))
                     }
+                    "/axelar.evm.v1beta1.ConfirmTokenRequest" => Some(RawPollRequests::Token(
+                        ConfirmTokenRequest::decode(&msg.value[..]).unwrap(),
+                    )),
                     _ => None,
                 })
                 .collect::<Vec<RawPollRequests>>()
@@ -279,6 +283,10 @@ pub fn process_block(
                 tx: hex::encode(&t.tx_id),
                 chain: t.chain.clone(),
             }],
+            RawPollRequests::Token(t) => vec![PollRequest::Token {
+                tx: hex::encode(&t.tx_id),
+                chain: t.chain.clone(),
+            }],
         })
         .flatten()
         .collect();
@@ -307,6 +315,11 @@ pub fn process_block(
                     expiry_height,
                 },
                 PollRequest::TransferKey { chain, tx } => PollCreation::TransferKey {
+                    tx,
+                    chain,
+                    expiry_height,
+                },
+                PollRequest::Token { chain, tx } => PollCreation::Token {
                     tx,
                     chain,
                     expiry_height,
@@ -358,6 +371,14 @@ mod tests {
             "binance".to_string(),
             ChainParams {
                 name: "binance".to_string(),
+                revote_locking_period: 15,
+                voting_grace_period: 3,
+            },
+        );
+        params.insert(
+            "ethereum".to_string(),
+            ChainParams {
+                name: "Ethereum".to_string(),
                 revote_locking_period: 15,
                 voting_grace_period: 3,
             },
@@ -474,5 +495,32 @@ mod tests {
             has_binance_tx,
             "Should have a binance GatewayTx poll creation"
         );
+    }
+
+    #[test]
+    fn test_process_block_confirm_token() {
+        let height = 20133866;
+        let block = load_test_block("confirm_token", height);
+        let chain_params = create_test_chain_params();
+
+        let result = process_block(&block, &chain_params, height).unwrap();
+
+        assert_eq!(result.poll_creations.len(), 1);
+
+        match &result.poll_creations[0] {
+            crate::polls::PollCreation::Token {
+                tx,
+                chain,
+                expiry_height,
+            } => {
+                assert_eq!(
+                    tx,
+                    "05f9266335faf6ff82f98687f7f19398426faf3b1cca5ef26b235b42baa593e5"
+                );
+                assert_eq!(chain, "Ethereum");
+                assert_eq!(*expiry_height, 20133866 + 15);
+            }
+            _ => panic!("Expected Token poll creation"),
+        }
     }
 }

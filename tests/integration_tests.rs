@@ -57,6 +57,16 @@ fn create_test_config() -> Config {
                 revote_locking_period: 15,
                 voting_grace_period: 3,
             },
+            config::ChainParams {
+                name: "Ethereum".to_string(),
+                revote_locking_period: 15,
+                voting_grace_period: 3,
+            },
+            config::ChainParams {
+                name: "ethereum".to_string(),
+                revote_locking_period: 15,
+                voting_grace_period: 3,
+            },
         ],
     }
 }
@@ -234,4 +244,61 @@ fn test_full_poll_flow_gateway_txs_batch() {
         has_binance_poll,
         "Should have created a binance GatewayTx poll"
     );
+}
+
+#[test]
+fn test_full_poll_flow_confirm_token() {
+    let config = create_test_config();
+    let mut state = ProcessingState::new(&config);
+    let height = 20133866;
+
+    let io_responses = mock_process_io_command(
+        IoCommand::FetchBlock(Height::Specific(height)),
+        "confirm_token",
+        height,
+    );
+
+    for io_resp in io_responses {
+        if let IoResponse::SendMessage(msg) = io_resp {
+            let proc_responses = process_single_message(msg, &mut state, &config);
+
+            assert!(
+                proc_responses.iter().any(|r| matches!(
+                    r,
+                    ProcessingResponse::SendIoCommand(IoCommand::FetchBlockResults(_))
+                )),
+                "Should request BlockResults"
+            );
+
+            for proc_resp in proc_responses {
+                if let ProcessingResponse::SendIoCommand(cmd) = proc_resp {
+                    let io_responses2 = mock_process_io_command(cmd, "confirm_token", height);
+
+                    for io_resp2 in io_responses2 {
+                        if let IoResponse::SendMessage(msg2) = io_resp2 {
+                            process_single_message(msg2, &mut state, &config);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    assert_eq!(state.polls.len(), 1, "Should have created 1 poll");
+    assert!(
+        state.polls.contains_key(&2803037),
+        "Should contain poll_id 2803037"
+    );
+
+    let poll = &state.polls[&2803037];
+    match &poll.poll_type {
+        polls::PollType::GatewayTx { tx, chain } => {
+            assert_eq!(
+                tx,
+                "05f9266335faf6ff82f98687f7f19398426faf3b1cca5ef26b235b42baa593e5"
+            );
+            assert_eq!(chain, "Ethereum");
+        }
+        _ => panic!("Expected GatewayTx poll type (Token polls map to GatewayTx)"),
+    }
 }

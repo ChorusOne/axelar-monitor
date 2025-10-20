@@ -25,6 +25,10 @@ pub enum PollRequest {
         tx: String,
         chain: String,
     },
+    Token {
+        tx: String,
+        chain: String,
+    },
 }
 
 impl PollRequest {
@@ -33,6 +37,7 @@ impl PollRequest {
             PollRequest::GatewayTx { tx, .. } => tx,
             PollRequest::Deposit { tx, .. } => tx,
             PollRequest::TransferKey { tx, .. } => tx,
+            PollRequest::Token { tx, .. } => tx,
         }
     }
 
@@ -41,6 +46,7 @@ impl PollRequest {
             PollRequest::GatewayTx { chain, .. } => chain,
             PollRequest::Deposit { chain, .. } => chain,
             PollRequest::TransferKey { chain, .. } => chain,
+            PollRequest::Token { chain, .. } => chain,
         }
     }
 }
@@ -81,6 +87,11 @@ pub enum PollCreation {
         expiry_height: u64,
         chain: String,
     },
+    Token {
+        tx: String,
+        expiry_height: u64,
+        chain: String,
+    },
 }
 
 impl PollCreation {
@@ -112,6 +123,10 @@ impl PollCreation {
                 chain: chain.clone(),
                 tx,
             },
+            PollCreation::Token { chain, .. } => PollType::GatewayTx {
+                chain: chain.clone(),
+                tx,
+            },
         }
     }
     pub fn tx(&self) -> &str {
@@ -119,6 +134,7 @@ impl PollCreation {
             PollCreation::GatewayTx { tx, .. } => tx,
             PollCreation::Deposit { tx, .. } => tx,
             PollCreation::TransferKey { tx, .. } => tx,
+            PollCreation::Token { tx, .. } => tx,
         }
     }
 
@@ -127,6 +143,7 @@ impl PollCreation {
             PollCreation::GatewayTx { expiry_height, .. } => *expiry_height,
             PollCreation::Deposit { expiry_height, .. } => *expiry_height,
             PollCreation::TransferKey { expiry_height, .. } => *expiry_height,
+            PollCreation::Token { expiry_height, .. } => *expiry_height,
         }
     }
 }
@@ -252,6 +269,7 @@ pub enum PollEvent {
     GatewayTx { tx_id: Vec<u8>, poll_id: u64 },
     Deposit { tx_id: Vec<u8>, poll_id: u64 },
     TransferKey { tx_id: Vec<u8>, poll_id: u64 },
+    Token { tx_id: Vec<u8>, poll_id: u64 },
 }
 impl PollEvent {
     pub fn tx(&self) -> String {
@@ -259,6 +277,7 @@ impl PollEvent {
             PollEvent::Deposit { tx_id, .. } => hex::encode(tx_id),
             PollEvent::GatewayTx { tx_id, .. } => hex::encode(tx_id),
             PollEvent::TransferKey { tx_id, .. } => hex::encode(tx_id),
+            PollEvent::Token { tx_id, .. } => hex::encode(tx_id),
         }
     }
     pub fn poll_id(&self) -> u64 {
@@ -266,6 +285,7 @@ impl PollEvent {
             PollEvent::Deposit { poll_id, .. } => *poll_id,
             PollEvent::GatewayTx { poll_id, .. } => *poll_id,
             PollEvent::TransferKey { poll_id, .. } => *poll_id,
+            PollEvent::Token { poll_id, .. } => *poll_id,
         }
     }
 }
@@ -342,6 +362,14 @@ pub fn extract_all_poll_events(block_results: &BlockResults) -> Vec<PollEvent> {
                         "axelar.evm.v1beta1.ConfirmKeyTransferStarted" => {
                             extract_poll_participants_from_event(event).map(|p| {
                                 PollEvent::TransferKey {
+                                    tx_id: p.tx_id,
+                                    poll_id: p.poll_id,
+                                }
+                            })
+                        }
+                        "axelar.evm.v1beta1.ConfirmTokenStarted" => {
+                            extract_poll_participants_from_event(event).map(|p| {
+                                PollEvent::Token {
                                     tx_id: p.tx_id,
                                     poll_id: p.poll_id,
                                 }
