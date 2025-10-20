@@ -550,4 +550,49 @@ mod tests {
             _ => panic!("Expected Token poll creation"),
         }
     }
+
+    #[test]
+    fn test_fantom_vote_regression_batch_request() {
+        let mut chain_params = HashMap::new();
+        chain_params.insert(
+            "fantom".to_string(),
+            ChainParams {
+                name: "Fantom".to_string(),
+                revote_locking_period: 15,
+                voting_grace_period: 3,
+            },
+        );
+
+        let test_cases = vec![
+            (20428479, 8),
+            (20428480, 33),
+            (20428482, 19),
+            (20428483, 1),
+            (20428484, 1),
+            (20428485, 1),
+        ];
+
+        for (height, expected_vote_count) in &test_cases {
+            let block = load_test_block("fantom_vote_regression", *height);
+            let result = process_block(&block, &chain_params, *height).unwrap();
+
+            let poll_2848588_votes: Vec<_> = result
+                .votes
+                .iter()
+                .filter(|v| v.poll_id == 2848588)
+                .collect();
+
+            assert_eq!(
+                poll_2848588_votes.len(),
+                *expected_vote_count,
+                "Block {} should have {} votes for poll 2848588, but found {}",
+                height,
+                expected_vote_count,
+                poll_2848588_votes.len()
+            );
+        }
+
+        let total_votes: usize = test_cases.iter().map(|(_, count)| count).sum();
+        assert_eq!(total_votes, 63, "Total votes should be 63");
+    }
 }
