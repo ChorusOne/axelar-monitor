@@ -22,6 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Use cosmos types from cosmos-sdk-proto crate instead of generating them
     config.extern_path(".cosmos.base.v1beta1", "::cosmos_sdk_proto::cosmos::base::v1beta1");
+    config.extern_path(".cosmos.base.abci.v1beta1", "::cosmos_sdk_proto::cosmos::base::abci::v1beta1");
 
     config.compile_protos(&proto_files, &proto_includes)?;
 

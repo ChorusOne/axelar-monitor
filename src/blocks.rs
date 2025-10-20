@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use crate::config::ChainParams;
 use crate::generated::axelar::evm::v1beta1::event::Event;
 use crate::generated::axelar::evm::v1beta1::{
-    ConfirmDepositRequest, ConfirmGatewayTxRequest, ConfirmGatewayTxsRequest,
-    ConfirmTokenRequest, ConfirmTransferKeyRequest, VoteEvents,
+    ConfirmDepositRequest, ConfirmGatewayTxRequest, ConfirmGatewayTxsRequest, ConfirmTokenRequest,
+    ConfirmTransferKeyRequest, VoteEvents,
 };
 use crate::generated::axelar::reward::v1beta1::RefundMsgRequest;
 use crate::generated::axelar::tss::v1beta1::HeartBeatRequest;
@@ -87,12 +87,39 @@ pub fn extract_heartbeat_requests(tx: &TxBody) -> Vec<HeartBeatRequest> {
         .collect();
     heartbeat_messages
 }
-fn extract_refund_messages(tx_body: &TxBody) -> Vec<&cosmos_sdk_proto::Any> {
-    tx_body
-        .messages
-        .iter()
-        .filter(|msg| msg.type_url == "/axelar.reward.v1beta1.RefundMsgRequest")
-        .collect()
+fn extract_refund_messages(tx_body: &TxBody) -> Vec<cosmos_sdk_proto::Any> {
+    let mut refund_messages = Vec::new();
+
+    for msg in &tx_body.messages {
+        if msg.type_url == "/axelar.reward.v1beta1.RefundMsgRequest" {
+            refund_messages.push(msg.clone());
+        } else if msg.type_url == "/axelar.auxiliary.v1beta1.BatchRequest" {
+            if let Ok(batch) = decode_batch_request(&msg.value) {
+                for inner_msg in batch {
+                    if inner_msg.type_url == "/axelar.reward.v1beta1.RefundMsgRequest" {
+                        refund_messages.push(inner_msg);
+                    }
+                }
+            }
+        }
+    }
+
+    refund_messages
+}
+
+fn decode_batch_request(data: &[u8]) -> Result<Vec<cosmos_sdk_proto::Any>, prost::DecodeError> {
+    use prost::Message;
+
+    #[derive(Clone, PartialEq, Message)]
+    struct BatchRequest {
+        #[prost(bytes = "vec", tag = "1")]
+        pub sender: Vec<u8>,
+        #[prost(message, repeated, tag = "2")]
+        pub messages: Vec<cosmos_sdk_proto::Any>,
+    }
+
+    let batch = BatchRequest::decode(data)?;
+    Ok(batch.messages)
 }
 
 pub enum RawPollRequests {
