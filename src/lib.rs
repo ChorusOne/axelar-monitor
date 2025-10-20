@@ -342,7 +342,7 @@ pub fn process_single_message(
                     && old_tip == state.last_processed_height
                 {
                     let next_height = state.last_processed_height + 1;
-                    info!(
+                    debug!(
                         "Chain advanced while caught up, fetching block {}",
                         next_height
                     );

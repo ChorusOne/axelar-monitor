@@ -205,11 +205,40 @@ pub fn get_block_results(
     lcd_url: &str,
     height: u64,
 ) -> Result<BlockResults, Box<dyn std::error::Error>> {
+    // TODO: This retry logic should be moved to a proper async retry mechanism
     let url = format!("{}/block_results?height={}", lcd_url, height);
-    let mut response = ureq::get(&url).call()?;
-    let body = response.body_mut().read_to_string()?;
-    let parsed: BlockResultsResponse = serde_json::from_str(&body)?;
-    Ok(parsed.result)
+
+    let delays_ms = [0, 100, 1000, 2000];
+    let mut last_error = None;
+
+    for (attempt, delay) in delays_ms.iter().enumerate() {
+        std::thread::sleep(std::time::Duration::from_millis(*delay));
+
+        match ureq::get(&url).call() {
+            Ok(mut response) => {
+                let body = response.body_mut().read_to_string()?;
+                let parsed: BlockResultsResponse = serde_json::from_str(&body)?;
+                if attempt > 0 {
+                    log::info!(
+                        "Retrying block results for height {} succeeded on attempt {}",
+                        height,
+                        attempt + 1
+                    );
+                }
+                return Ok(parsed.result);
+            }
+            Err(e) => {
+                last_error = Some(e);
+            }
+        }
+    }
+
+    Err(format!(
+        "Failed to fetch block results after {} attempts: {}",
+        delays_ms.len(),
+        last_error.unwrap()
+    )
+    .into())
 }
 
 #[derive(Deserialize, Debug)]
@@ -368,11 +397,9 @@ pub fn extract_all_poll_events(block_results: &BlockResults) -> Vec<PollEvent> {
                             })
                         }
                         "axelar.evm.v1beta1.ConfirmTokenStarted" => {
-                            extract_poll_participants_from_event(event).map(|p| {
-                                PollEvent::Token {
-                                    tx_id: p.tx_id,
-                                    poll_id: p.poll_id,
-                                }
+                            extract_poll_participants_from_event(event).map(|p| PollEvent::Token {
+                                tx_id: p.tx_id,
+                                poll_id: p.poll_id,
                             })
                         }
                         _ => None,
