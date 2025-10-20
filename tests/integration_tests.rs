@@ -1,0 +1,237 @@
+use axelar_watch::{
+    blocks, config, polls, process_single_message, Config, Height, IoCommand, IoResponse,
+    ProcessingMessage, ProcessingResponse, ProcessingState,
+};
+
+fn load_test_block_from_json(test_type: &str, height: u64) -> blocks::Block {
+    let path = format!("test_data/{}/block_{}.json", test_type, height);
+    let json = std::fs::read_to_string(&path).unwrap();
+    blocks::parse_block(&json).unwrap()
+}
+
+fn load_test_block_results_from_json(test_type: &str, height: u64) -> polls::BlockResults {
+    let path = format!("test_data/{}/block_result_{}.json", test_type, height);
+    let json = std::fs::read_to_string(&path).unwrap();
+    let response: polls::BlockResultsResponse = serde_json::from_str(&json).unwrap();
+    response.result
+}
+
+fn mock_process_io_command(cmd: IoCommand, test_type: &str, _height: u64) -> Vec<IoResponse> {
+    match cmd {
+        IoCommand::FetchBlock(Height::Specific(h)) => {
+            let block = load_test_block_from_json(test_type, h);
+            vec![IoResponse::SendMessage(ProcessingMessage::IoResult(
+                axelar_watch::IoResult::Block(h, block),
+            ))]
+        }
+        IoCommand::FetchBlockResults(h) => {
+            let block_results = load_test_block_results_from_json(test_type, h);
+            vec![IoResponse::SendMessage(ProcessingMessage::IoResult(
+                axelar_watch::IoResult::BlockResults(h, block_results),
+            ))]
+        }
+        _ => vec![],
+    }
+}
+
+fn create_test_config() -> Config {
+    Config {
+        rpc_url: "http://test".to_string(),
+        lcd_url: "http://test".to_string(),
+        poll_interval_seconds: 6,
+        metrics_port: 9090,
+        broadcaster: vec![],
+        chain_params: vec![
+            config::ChainParams {
+                name: "Avalanche".to_string(),
+                revote_locking_period: 15,
+                voting_grace_period: 3,
+            },
+            config::ChainParams {
+                name: "scroll".to_string(),
+                revote_locking_period: 15,
+                voting_grace_period: 3,
+            },
+            config::ChainParams {
+                name: "binance".to_string(),
+                revote_locking_period: 15,
+                voting_grace_period: 3,
+            },
+        ],
+    }
+}
+
+#[test]
+fn test_full_poll_flow_deposit() {
+    let config = create_test_config();
+    let mut state = ProcessingState::new(&config);
+    let height = 20383480;
+
+    let io_responses = mock_process_io_command(
+        IoCommand::FetchBlock(Height::Specific(height)),
+        "deposit",
+        height,
+    );
+
+    for io_resp in io_responses {
+        if let IoResponse::SendMessage(msg) = io_resp {
+            let proc_responses = process_single_message(msg, &mut state, &config);
+
+            assert!(
+                proc_responses.iter().any(|r| matches!(
+                    r,
+                    ProcessingResponse::SendIoCommand(IoCommand::FetchBlockResults(_))
+                )),
+                "Should request BlockResults"
+            );
+
+            for proc_resp in proc_responses {
+                if let ProcessingResponse::SendIoCommand(cmd) = proc_resp {
+                    let io_responses2 = mock_process_io_command(cmd, "deposit", height);
+
+                    for io_resp2 in io_responses2 {
+                        if let IoResponse::SendMessage(msg2) = io_resp2 {
+                            process_single_message(msg2, &mut state, &config);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    assert_eq!(state.polls.len(), 1, "Should have created 1 poll");
+    assert!(
+        state.polls.contains_key(&2839857),
+        "Should contain poll_id 2839857"
+    );
+
+    let poll = &state.polls[&2839857];
+    match &poll.poll_type {
+        polls::PollType::Deposit {
+            tx,
+            chain,
+            burner_address,
+        } => {
+            assert_eq!(
+                tx,
+                "4af800f430dc829f3f08dd698dccdb3aac37438288653503bb2710f6cab386ec"
+            );
+            assert_eq!(chain, "Avalanche");
+            assert_eq!(burner_address, "64db450dae5f15853b9119918cd7dd7944e67510");
+        }
+        _ => panic!("Expected Deposit poll type"),
+    }
+}
+
+#[test]
+fn test_full_poll_flow_transfer_key() {
+    let config = create_test_config();
+    let mut state = ProcessingState::new(&config);
+    let height = 20404088;
+
+    let io_responses = mock_process_io_command(
+        IoCommand::FetchBlock(Height::Specific(height)),
+        "transfer_key",
+        height,
+    );
+
+    for io_resp in io_responses {
+        if let IoResponse::SendMessage(msg) = io_resp {
+            let proc_responses = process_single_message(msg, &mut state, &config);
+
+            for proc_resp in proc_responses {
+                if let ProcessingResponse::SendIoCommand(cmd) = proc_resp {
+                    let io_responses2 = mock_process_io_command(cmd, "transfer_key", height);
+
+                    for io_resp2 in io_responses2 {
+                        if let IoResponse::SendMessage(msg2) = io_resp2 {
+                            process_single_message(msg2, &mut state, &config);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    assert_eq!(state.polls.len(), 2, "Should have created 2 polls");
+    assert!(
+        state.polls.contains_key(&2843160),
+        "Should contain TransferKey poll_id 2843160"
+    );
+    assert!(
+        state.polls.contains_key(&2843161),
+        "Should contain GatewayTx poll_id 2843161"
+    );
+
+    let transfer_key_poll = &state.polls[&2843160];
+    match &transfer_key_poll.poll_type {
+        polls::PollType::TransferKey { tx, chain } => {
+            assert_eq!(
+                tx,
+                "78e2698855ffb323320c8d4ae1dc85eb3c8e10b3a75180a7aadb238f769f6e8d"
+            );
+            assert_eq!(chain, "scroll");
+        }
+        _ => panic!("Expected TransferKey poll type"),
+    }
+
+    let gateway_tx_poll = &state.polls[&2843161];
+    match &gateway_tx_poll.poll_type {
+        polls::PollType::GatewayTx { tx, chain } => {
+            assert_eq!(
+                tx,
+                "05a409afd25c53a59f98a48721a5274a450b4ac5a2007842b4e168a111af806e"
+            );
+            assert_eq!(chain, "scroll");
+        }
+        _ => panic!("Expected GatewayTx poll type"),
+    }
+}
+
+#[test]
+fn test_full_poll_flow_gateway_txs_batch() {
+    let config = create_test_config();
+    let mut state = ProcessingState::new(&config);
+    let height = 20413624;
+
+    let io_responses = mock_process_io_command(
+        IoCommand::FetchBlock(Height::Specific(height)),
+        "gateway_txs",
+        height,
+    );
+
+    for io_resp in io_responses {
+        if let IoResponse::SendMessage(msg) = io_resp {
+            let proc_responses = process_single_message(msg, &mut state, &config);
+
+            for proc_resp in proc_responses {
+                if let ProcessingResponse::SendIoCommand(cmd) = proc_resp {
+                    let io_responses2 = mock_process_io_command(cmd, "gateway_txs", height);
+
+                    for io_resp2 in io_responses2 {
+                        if let IoResponse::SendMessage(msg2) = io_resp2 {
+                            process_single_message(msg2, &mut state, &config);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(
+        state.polls.len() >= 1,
+        "Should have created at least 1 poll from batch"
+    );
+
+    let has_binance_poll = state.polls.values().any(|poll| {
+        matches!(
+            &poll.poll_type,
+            polls::PollType::GatewayTx { chain, .. } if chain == "binance"
+        )
+    });
+
+    assert!(
+        has_binance_poll,
+        "Should have created a binance GatewayTx poll"
+    );
+}
