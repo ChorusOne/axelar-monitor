@@ -1,88 +1,17 @@
+pub mod common;
+
 use axelar_watch::{
-    Config, Height, IoCommand, IoResponse, ProcessingMessage, ProcessingResponse, ProcessingState,
-    blocks, config, polls, process_single_message, rpc,
+    Height, IoCommand, IoResponse, ProcessingResponse, ProcessingState, polls,
+    process_single_message,
 };
-
-fn load_test_block_from_json(test_type: &str, height: u64) -> blocks::Block {
-    let path = format!("test_data/{}/block_{}.json", test_type, height);
-    let json = std::fs::read_to_string(&path).unwrap();
-    blocks::parse_block(&json).unwrap()
-}
-
-fn load_test_block_results_from_json(test_type: &str, height: u64) -> rpc::BlockResults {
-    let path = format!("test_data/{}/block_result_{}.json", test_type, height);
-    let json = std::fs::read_to_string(&path).unwrap();
-    let response: rpc::BlockResultsResponse = serde_json::from_str(&json).unwrap();
-    response.result
-}
-
-fn mock_process_io_command(cmd: IoCommand, test_type: &str, _height: u64) -> Vec<IoResponse> {
-    match cmd {
-        IoCommand::FetchBlock(Height::Specific(h)) => {
-            let block = load_test_block_from_json(test_type, h);
-            vec![IoResponse::SendMessage(ProcessingMessage::IoResult(
-                axelar_watch::IoResult::Block(h, block),
-            ))]
-        }
-        IoCommand::FetchBlockResults(h) => {
-            let block_results = load_test_block_results_from_json(test_type, h);
-            vec![IoResponse::SendMessage(ProcessingMessage::IoResult(
-                axelar_watch::IoResult::BlockResults(h, block_results),
-            ))]
-        }
-        _ => vec![],
-    }
-}
-
-fn create_test_config() -> Config {
-    Config {
-        rpc_url: "http://test".to_string(),
-        lcd_url: "http://test".to_string(),
-        poll_interval_seconds: 6,
-        metrics_port: 9090,
-        broadcaster: vec![],
-        chain_params: vec![
-            config::ChainParams {
-                name: "Avalanche".to_string(),
-                revote_locking_period: 15,
-                voting_grace_period: 3,
-            },
-            config::ChainParams {
-                name: "scroll".to_string(),
-                revote_locking_period: 15,
-                voting_grace_period: 3,
-            },
-            config::ChainParams {
-                name: "binance".to_string(),
-                revote_locking_period: 15,
-                voting_grace_period: 3,
-            },
-            config::ChainParams {
-                name: "Ethereum".to_string(),
-                revote_locking_period: 15,
-                voting_grace_period: 3,
-            },
-            config::ChainParams {
-                name: "ethereum".to_string(),
-                revote_locking_period: 15,
-                voting_grace_period: 3,
-            },
-            config::ChainParams {
-                name: "blast".to_string(),
-                revote_locking_period: 15,
-                voting_grace_period: 3,
-            },
-        ],
-    }
-}
 
 #[test]
 fn test_full_poll_flow_deposit() {
-    let config = create_test_config();
+    let config = common::create_test_config();
     let mut state = ProcessingState::new(&config);
     let height = 20383480;
 
-    let io_responses = mock_process_io_command(
+    let io_responses = common::mock_process_io_command(
         IoCommand::FetchBlock(Height::Specific(height)),
         "deposit",
         height,
@@ -102,7 +31,7 @@ fn test_full_poll_flow_deposit() {
 
             for proc_resp in proc_responses {
                 if let ProcessingResponse::SendIoCommand(cmd) = proc_resp {
-                    let io_responses2 = mock_process_io_command(cmd, "deposit", height);
+                    let io_responses2 = common::mock_process_io_command(cmd, "deposit", height);
 
                     for io_resp2 in io_responses2 {
                         if let IoResponse::SendMessage(msg2) = io_resp2 {
@@ -140,11 +69,11 @@ fn test_full_poll_flow_deposit() {
 
 #[test]
 fn test_full_poll_flow_transfer_key() {
-    let config = create_test_config();
+    let config = common::create_test_config();
     let mut state = ProcessingState::new(&config);
     let height = 20404088;
 
-    let io_responses = mock_process_io_command(
+    let io_responses = common::mock_process_io_command(
         IoCommand::FetchBlock(Height::Specific(height)),
         "transfer_key",
         height,
@@ -156,7 +85,8 @@ fn test_full_poll_flow_transfer_key() {
 
             for proc_resp in proc_responses {
                 if let ProcessingResponse::SendIoCommand(cmd) = proc_resp {
-                    let io_responses2 = mock_process_io_command(cmd, "transfer_key", height);
+                    let io_responses2 =
+                        common::mock_process_io_command(cmd, "transfer_key", height);
 
                     for io_resp2 in io_responses2 {
                         if let IoResponse::SendMessage(msg2) = io_resp2 {
@@ -205,11 +135,11 @@ fn test_full_poll_flow_transfer_key() {
 
 #[test]
 fn test_full_poll_flow_gateway_txs_batch() {
-    let config = create_test_config();
+    let config = common::create_test_config();
     let mut state = ProcessingState::new(&config);
     let height = 20413624;
 
-    let io_responses = mock_process_io_command(
+    let io_responses = common::mock_process_io_command(
         IoCommand::FetchBlock(Height::Specific(height)),
         "gateway_txs",
         height,
@@ -221,7 +151,7 @@ fn test_full_poll_flow_gateway_txs_batch() {
 
             for proc_resp in proc_responses {
                 if let ProcessingResponse::SendIoCommand(cmd) = proc_resp {
-                    let io_responses2 = mock_process_io_command(cmd, "gateway_txs", height);
+                    let io_responses2 = common::mock_process_io_command(cmd, "gateway_txs", height);
 
                     for io_resp2 in io_responses2 {
                         if let IoResponse::SendMessage(msg2) = io_resp2 {
@@ -253,11 +183,11 @@ fn test_full_poll_flow_gateway_txs_batch() {
 
 #[test]
 fn test_full_poll_flow_confirm_token() {
-    let config = create_test_config();
+    let config = common::create_test_config();
     let mut state = ProcessingState::new(&config);
     let height = 20133866;
 
-    let io_responses = mock_process_io_command(
+    let io_responses = common::mock_process_io_command(
         IoCommand::FetchBlock(Height::Specific(height)),
         "confirm_token",
         height,
@@ -277,7 +207,8 @@ fn test_full_poll_flow_confirm_token() {
 
             for proc_resp in proc_responses {
                 if let ProcessingResponse::SendIoCommand(cmd) = proc_resp {
-                    let io_responses2 = mock_process_io_command(cmd, "confirm_token", height);
+                    let io_responses2 =
+                        common::mock_process_io_command(cmd, "confirm_token", height);
 
                     for io_resp2 in io_responses2 {
                         if let IoResponse::SendMessage(msg2) = io_resp2 {
@@ -310,11 +241,11 @@ fn test_full_poll_flow_confirm_token() {
 
 #[test]
 fn test_full_poll_flow_confirm_gateway_tx_started() {
-    let config = create_test_config();
+    let config = common::create_test_config();
     let mut state = ProcessingState::new(&config);
     let height = 20414583;
 
-    let io_responses = mock_process_io_command(
+    let io_responses = common::mock_process_io_command(
         IoCommand::FetchBlock(Height::Specific(height)),
         "confirm_gateway_tx",
         height,
@@ -334,7 +265,8 @@ fn test_full_poll_flow_confirm_gateway_tx_started() {
 
             for proc_resp in proc_responses {
                 if let ProcessingResponse::SendIoCommand(cmd) = proc_resp {
-                    let io_responses2 = mock_process_io_command(cmd, "confirm_gateway_tx", height);
+                    let io_responses2 =
+                        common::mock_process_io_command(cmd, "confirm_gateway_tx", height);
 
                     for io_resp2 in io_responses2 {
                         if let IoResponse::SendMessage(msg2) = io_resp2 {
@@ -367,11 +299,11 @@ fn test_full_poll_flow_confirm_gateway_tx_started() {
 
 #[test]
 fn test_empty_block_no_polls_no_votes() {
-    let config = create_test_config();
+    let config = common::create_test_config();
     let mut state = ProcessingState::new(&config);
     let height = 20432569;
 
-    let io_responses = mock_process_io_command(
+    let io_responses = common::mock_process_io_command(
         IoCommand::FetchBlock(Height::Specific(height)),
         "empty_block",
         height,
@@ -383,7 +315,7 @@ fn test_empty_block_no_polls_no_votes() {
 
             for proc_resp in proc_responses {
                 if let ProcessingResponse::SendIoCommand(cmd) = proc_resp {
-                    let io_responses2 = mock_process_io_command(cmd, "empty_block", height);
+                    let io_responses2 = common::mock_process_io_command(cmd, "empty_block", height);
 
                     for io_resp2 in io_responses2 {
                         if let IoResponse::SendMessage(msg2) = io_resp2 {
