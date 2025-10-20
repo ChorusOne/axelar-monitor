@@ -154,6 +154,10 @@ fn analyze_poll_completion(
                 stats.total_votes += 1;
                 if vote.tx_id != majority {
                     stats.disagreed_with_majority += 1;
+                    warn!(
+                        "Disagreed vote: broadcaster={} chain={} poll_id={} voted_tx={} majority_tx={}",
+                        broadcaster_name, vote.chain, vote.poll_id, vote.tx_id, majority
+                    );
                 }
             }
         }
@@ -293,7 +297,8 @@ pub fn process_single_message(
                         let tx_id = creation.tx();
                         if let Some(poll_id) = tx_to_poll_ids.get(tx_id) {
                             let poll = creation.into_poll(*poll_id, tx_id.into());
-                            info!("Created poll at {height} = {poll:?}");
+                            info!("Created poll at {height}; poll_id: {poll_id}");
+                            debug!("Created poll at {height} = {poll:?}");
                             state.polls.insert(poll.poll_id, poll);
                         } else {
                             warn!(
