@@ -230,7 +230,6 @@ fn processing_loop(
                     chain_height = std::cmp::max(chain_height, height);
                     info!("at height {chain_height}");
                     polls.retain(|_, v| v.expiry_height > height as u64);
-                    debug!("open polls after pruning {}", polls.len());
 
                     match blocks::process_block(&block, &chain_params, height) {
                         Ok(data) => {
@@ -244,6 +243,8 @@ fn processing_loop(
                                 }
                             }
 
+                            // We have poll data but are missing its poll_id
+                            // which comes from a tendermint event (/block_results?height=...)
                             if !data.poll_creations.is_empty() {
                                 info!(
                                     "Storing {} poll_creations for height {}, fetching block_results",

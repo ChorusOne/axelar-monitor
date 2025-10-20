@@ -324,3 +324,155 @@ pub fn process_block(
         votes,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ChainParams;
+
+    fn load_test_block(test_type: &str, height: u64) -> Block {
+        let path = format!("test_data/{}/block_{}.json", test_type, height);
+        let json = std::fs::read_to_string(&path).unwrap();
+        parse_block(&json).unwrap()
+    }
+
+    fn create_test_chain_params() -> HashMap<String, ChainParams> {
+        let mut params = HashMap::new();
+        params.insert(
+            "avalanche".to_string(),
+            ChainParams {
+                name: "Avalanche".to_string(),
+                revote_locking_period: 15,
+                voting_grace_period: 3,
+            },
+        );
+        params.insert(
+            "scroll".to_string(),
+            ChainParams {
+                name: "scroll".to_string(),
+                revote_locking_period: 15,
+                voting_grace_period: 3,
+            },
+        );
+        params.insert(
+            "binance".to_string(),
+            ChainParams {
+                name: "binance".to_string(),
+                revote_locking_period: 15,
+                voting_grace_period: 3,
+            },
+        );
+        params
+    }
+
+    #[test]
+    fn test_process_block_deposit() {
+        let height = 20383480;
+        let block = load_test_block("deposit", height);
+        let chain_params = create_test_chain_params();
+
+        let result = process_block(&block, &chain_params, height).unwrap();
+
+        assert_eq!(result.poll_creations.len(), 1);
+
+        match &result.poll_creations[0] {
+            crate::polls::PollCreation::Deposit {
+                tx,
+                chain,
+                burner_address,
+                expiry_height,
+            } => {
+                assert_eq!(
+                    tx,
+                    "4af800f430dc829f3f08dd698dccdb3aac37438288653503bb2710f6cab386ec"
+                );
+                assert_eq!(chain, "Avalanche");
+                assert_eq!(burner_address, "64db450dae5f15853b9119918cd7dd7944e67510");
+                assert_eq!(*expiry_height, 20383480 + 15);
+            }
+            _ => panic!("Expected Deposit poll creation"),
+        }
+    }
+
+    #[test]
+    fn test_process_block_transfer_key() {
+        let height = 20404088;
+        let block = load_test_block("transfer_key", height);
+        let chain_params = create_test_chain_params();
+
+        let result = process_block(&block, &chain_params, height).unwrap();
+
+        assert_eq!(result.poll_creations.len(), 2);
+
+        let transfer_key = result
+            .poll_creations
+            .iter()
+            .find(|pc| matches!(pc, crate::polls::PollCreation::TransferKey { .. }))
+            .expect("Should have TransferKey poll creation");
+
+        match transfer_key {
+            crate::polls::PollCreation::TransferKey {
+                tx,
+                chain,
+                expiry_height,
+            } => {
+                assert_eq!(
+                    tx,
+                    "78e2698855ffb323320c8d4ae1dc85eb3c8e10b3a75180a7aadb238f769f6e8d"
+                );
+                assert_eq!(chain, "scroll");
+                assert_eq!(*expiry_height, 20404088 + 15);
+            }
+            _ => panic!("Expected TransferKey poll creation"),
+        }
+
+        let gateway_tx = result
+            .poll_creations
+            .iter()
+            .find(|pc| matches!(pc, crate::polls::PollCreation::GatewayTx { .. }))
+            .expect("Should have GatewayTx poll creation");
+
+        match gateway_tx {
+            crate::polls::PollCreation::GatewayTx {
+                tx,
+                chain,
+                expiry_height,
+            } => {
+                assert_eq!(
+                    tx,
+                    "05a409afd25c53a59f98a48721a5274a450b4ac5a2007842b4e168a111af806e"
+                );
+                assert_eq!(chain, "scroll");
+                assert_eq!(*expiry_height, 20404088 + 15);
+            }
+            _ => panic!("Expected GatewayTx poll creation"),
+        }
+    }
+
+    #[test]
+    fn test_process_block_gateway_txs_batch() {
+        let height = 20413624;
+        let block = load_test_block("gateway_txs", height);
+        let chain_params = create_test_chain_params();
+
+        let result = process_block(&block, &chain_params, height).unwrap();
+
+        assert!(
+            result.poll_creations.len() >= 1,
+            "Should have at least one GatewayTx poll creation"
+        );
+
+        let has_binance_tx = result.poll_creations.iter().any(|pc| {
+            if let crate::polls::PollCreation::GatewayTx { chain, .. } = pc {
+                chain == "binance"
+            } else {
+                false
+            }
+        });
+
+        assert!(
+            has_binance_tx,
+            "Should have a binance GatewayTx poll creation"
+        );
+    }
+}
