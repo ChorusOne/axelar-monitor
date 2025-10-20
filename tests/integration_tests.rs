@@ -1,5 +1,5 @@
 use axelar_watch::{
-    blocks, config, polls, process_single_message, Config, Height, IoCommand, IoResponse,
+    blocks, config, polls, rpc, process_single_message, Config, Height, IoCommand, IoResponse,
     ProcessingMessage, ProcessingResponse, ProcessingState,
 };
 
@@ -9,10 +9,10 @@ fn load_test_block_from_json(test_type: &str, height: u64) -> blocks::Block {
     blocks::parse_block(&json).unwrap()
 }
 
-fn load_test_block_results_from_json(test_type: &str, height: u64) -> polls::BlockResults {
+fn load_test_block_results_from_json(test_type: &str, height: u64) -> rpc::BlockResults {
     let path = format!("test_data/{}/block_result_{}.json", test_type, height);
     let json = std::fs::read_to_string(&path).unwrap();
-    let response: polls::BlockResultsResponse = serde_json::from_str(&json).unwrap();
+    let response: rpc::BlockResultsResponse = serde_json::from_str(&json).unwrap();
     response.result
 }
 

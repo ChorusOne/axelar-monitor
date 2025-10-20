@@ -2,6 +2,7 @@ pub mod blocks;
 pub mod config;
 mod generated;
 pub mod polls;
+pub mod rpc;
 
 pub use config::Config;
 
@@ -30,7 +31,7 @@ pub enum IoCommand {
 
 pub enum IoResult {
     Block(u64, Block),
-    BlockResults(u64, polls::BlockResults),
+    BlockResults(u64, rpc::BlockResults),
     FetchError(Height, String),
     ChainList(Vec<String>),
     ChainParams(config::ChainParams),

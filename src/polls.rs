@@ -1,3 +1,4 @@
+use crate::rpc::{BlockResults, TendermintEvent};
 use base64::{Engine as _, engine::general_purpose};
 use serde::Deserialize;
 
@@ -172,73 +173,6 @@ impl Poll {
             PollType::TransferKey { chain, .. } => chain,
         }
     }
-}
-
-#[derive(Deserialize, Debug)]
-pub struct BlockResultsResponse {
-    pub result: BlockResults,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct BlockResults {
-    pub txs_results: Option<Vec<TxResult>>,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct TxResult {
-    pub events: Option<Vec<TendermintEvent>>,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct TendermintEvent {
-    pub r#type: String,
-    pub attributes: Vec<EventAttribute>,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct EventAttribute {
-    pub key: String,
-    pub value: Option<String>,
-}
-
-pub fn get_block_results(
-    lcd_url: &str,
-    height: u64,
-) -> Result<BlockResults, Box<dyn std::error::Error>> {
-    // TODO: This retry logic should be moved to a proper async retry mechanism
-    let url = format!("{}/block_results?height={}", lcd_url, height);
-
-    let delays_ms = [0, 100, 1000, 2000];
-    let mut last_error = None;
-
-    for (attempt, delay) in delays_ms.iter().enumerate() {
-        std::thread::sleep(std::time::Duration::from_millis(*delay));
-
-        match ureq::get(&url).call() {
-            Ok(mut response) => {
-                let body = response.body_mut().read_to_string()?;
-                let parsed: BlockResultsResponse = serde_json::from_str(&body)?;
-                if attempt > 0 {
-                    log::info!(
-                        "Retrying block results for height {} succeeded on attempt {}",
-                        height,
-                        attempt + 1
-                    );
-                }
-                return Ok(parsed.result);
-            }
-            Err(e) => {
-                last_error = Some(e);
-            }
-        }
-    }
-
-    Err(format!(
-        "Failed to fetch block results after {} attempts: {}",
-        delays_ms.len(),
-        last_error.unwrap()
-    )
-    .into())
 }
 
 #[derive(Deserialize, Debug)]

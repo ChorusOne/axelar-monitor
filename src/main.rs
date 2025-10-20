@@ -1,11 +1,8 @@
 use axelar_watch::{
     Config, Height, IoCommand, IoResponse, ProcessingMessage, ProcessingResponse, ProcessingState,
-    blocks, config, polls, process_single_message,
+    process_single_message,
 };
-use blocks::{Block, parse_block};
-use config::ChainParams;
 use log::{error, info};
-use serde::Deserialize;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -13,78 +10,7 @@ use std::time::Duration;
 mod metrics;
 
 use axelar_watch::IoResult;
-
-#[derive(Deserialize, Debug)]
-struct ChainListResponse {
-    chains: Vec<String>,
-}
-
-#[derive(Deserialize, Debug)]
-struct ChainParamsResponse {
-    params: ChainParamsJson,
-}
-
-#[derive(Deserialize, Debug)]
-struct ChainParamsJson {
-    chain: String,
-    revote_locking_period: String,
-    voting_grace_period: String,
-}
-
-impl Into<ChainParams> for ChainParamsJson {
-    fn into(self) -> ChainParams {
-        ChainParams {
-            name: self.chain,
-            revote_locking_period: self.revote_locking_period.parse().unwrap(),
-            voting_grace_period: self.voting_grace_period.parse().unwrap(),
-        }
-    }
-}
-
-fn get_block(base_url: &str, height: Height) -> Result<(Block, u64), Box<dyn std::error::Error>> {
-    let height_str = match height {
-        Height::Latest => "latest".into(),
-        Height::Specific(n) => n.to_string(),
-    };
-    let url = format!(
-        "{}/cosmos/base/tendermint/v1beta1/blocks/{}",
-        base_url, height_str
-    );
-
-    let mut response = ureq::get(&url).call()?;
-    let body = response.body_mut().read_to_string()?;
-    let b = parse_block(&body)?;
-    let h = b.header.height.parse()?;
-    Ok((b, h))
-}
-
-fn get_head(base_url: &str) -> Result<u64, Box<dyn std::error::Error>> {
-    let url = format!("{}/cosmos/base/tendermint/v1beta1/blocks/latest", base_url);
-    let mut response = ureq::get(&url).call()?;
-    let body = response.body_mut().read_to_string()?;
-    let b = parse_block(&body)?;
-    let h = b.header.height.parse()?;
-    Ok(h)
-}
-
-fn get_chain_list(base_url: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let url = format!("{}/axelar/evm/v1beta1/chains", base_url);
-    let mut response = ureq::get(&url).call()?;
-    let body = response.body_mut().read_to_string()?;
-    let parsed: ChainListResponse = serde_json::from_str(&body)?;
-    Ok(parsed.chains)
-}
-
-fn get_chain_params(
-    base_url: &str,
-    chain: &str,
-) -> Result<ChainParamsJson, Box<dyn std::error::Error>> {
-    let url = format!("{}/axelar/evm/v1beta1/params/{}", base_url, chain);
-    let mut response = ureq::get(&url).call()?;
-    let body = response.body_mut().read_to_string()?;
-    let parsed: ChainParamsResponse = serde_json::from_str(&body)?;
-    Ok(parsed.params)
-}
+use axelar_watch::rpc::{get_block, get_block_results, get_chain_list, get_chain_params, get_head};
 
 fn process_single_io_command(cmd: IoCommand, rpc_url: &str, lcd_url: &str) -> Vec<IoResponse> {
     match cmd {
@@ -96,7 +22,7 @@ fn process_single_io_command(cmd: IoCommand, rpc_url: &str, lcd_url: &str) -> Ve
                 IoResult::FetchError(height, e.to_string()),
             ))],
         },
-        IoCommand::FetchBlockResults(height) => match polls::get_block_results(lcd_url, height) {
+        IoCommand::FetchBlockResults(height) => match get_block_results(lcd_url, height) {
             Ok(block_results) => vec![IoResponse::SendMessage(ProcessingMessage::IoResult(
                 IoResult::BlockResults(height, block_results),
             ))],
