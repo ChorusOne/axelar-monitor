@@ -1,6 +1,162 @@
 use base64::{Engine as _, engine::general_purpose};
 use serde::Deserialize;
 
+#[derive(Debug)]
+pub struct PollVote {
+    pub poll_id: u64,
+    pub chain: String,
+    pub tx_id: String,
+    pub sender_id: String,
+    pub payload_hash: Option<String>,
+}
+
+#[derive(Debug)]
+pub enum PollRequest {
+    GatewayTx {
+        tx: String,
+        chain: String,
+    },
+    Deposit {
+        tx: String,
+        chain: String,
+        burner_address: String,
+    },
+    TransferKey {
+        tx: String,
+        chain: String,
+    },
+}
+
+impl PollRequest {
+    fn tx(&self) -> &str {
+        match self {
+            PollRequest::GatewayTx { tx, .. } => tx,
+            PollRequest::Deposit { tx, .. } => tx,
+            PollRequest::TransferKey { tx, .. } => tx,
+        }
+    }
+
+    pub fn chain(&self) -> &str {
+        match self {
+            PollRequest::GatewayTx { chain, .. } => chain,
+            PollRequest::Deposit { chain, .. } => chain,
+            PollRequest::TransferKey { chain, .. } => chain,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum PollType {
+    GatewayTx {
+        chain: String,
+        tx: String,
+    },
+    Deposit {
+        chain: String,
+        tx: String,
+        burner_address: String,
+        // TODO: add asset field if needed (extract from ConfirmDepositStarted event)
+    },
+    TransferKey {
+        chain: String,
+        tx: String,
+    },
+}
+
+#[derive(Debug)]
+pub enum PollCreation {
+    GatewayTx {
+        tx: String,
+        expiry_height: u64,
+        chain: String,
+    },
+    Deposit {
+        tx: String,
+        expiry_height: u64,
+        chain: String,
+        burner_address: String,
+    },
+    TransferKey {
+        tx: String,
+        expiry_height: u64,
+        chain: String,
+    },
+}
+
+impl PollCreation {
+    pub fn into_poll(&self, poll_id: u64, tx: String) -> Poll {
+        Poll {
+            poll_id,
+            poll_type: self.into_polltype(tx),
+            votes: vec![],
+            expiry_height: self.expiry_height(),
+        }
+    }
+
+    fn into_polltype(&self, tx: String) -> PollType {
+        match &self {
+            PollCreation::GatewayTx { chain, .. } => PollType::GatewayTx {
+                chain: chain.clone(),
+                tx,
+            },
+            PollCreation::Deposit {
+                chain,
+                burner_address,
+                ..
+            } => PollType::Deposit {
+                chain: chain.clone(),
+                tx,
+                burner_address: burner_address.clone(),
+            },
+            PollCreation::TransferKey { chain, .. } => PollType::TransferKey {
+                chain: chain.clone(),
+                tx,
+            },
+        }
+    }
+    pub fn tx(&self) -> &str {
+        match self {
+            PollCreation::GatewayTx { tx, .. } => tx,
+            PollCreation::Deposit { tx, .. } => tx,
+            PollCreation::TransferKey { tx, .. } => tx,
+        }
+    }
+
+    fn expiry_height(&self) -> u64 {
+        match self {
+            PollCreation::GatewayTx { expiry_height, .. } => *expiry_height,
+            PollCreation::Deposit { expiry_height, .. } => *expiry_height,
+            PollCreation::TransferKey { expiry_height, .. } => *expiry_height,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Poll {
+    pub poll_id: u64,
+    pub poll_type: PollType,
+    pub votes: Vec<PollVote>,
+    pub expiry_height: u64,
+}
+
+impl Poll {
+    fn tx(&self) -> &str {
+        match &self.poll_type {
+            PollType::GatewayTx { tx, .. } => tx,
+            PollType::Deposit { tx, .. } => tx,
+            PollType::TransferKey { tx, .. } => tx,
+        }
+    }
+
+    fn chain(&self) -> &str {
+        match &self.poll_type {
+            PollType::GatewayTx { chain, .. } => chain,
+            PollType::Deposit { chain, .. } => chain,
+            PollType::TransferKey { chain, .. } => chain,
+        }
+    }
+}
+
 #[derive(Deserialize, Debug)]
 pub struct BlockResultsResponse {
     pub result: BlockResults,

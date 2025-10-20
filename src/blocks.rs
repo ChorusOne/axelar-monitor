@@ -2,8 +2,9 @@ use base64::{Engine as _, engine::general_purpose};
 use cosmos_sdk_proto::cosmos::tx::v1beta1::{Tx, TxBody};
 use prost::Message;
 use serde::Deserialize;
+use std::collections::HashMap;
 
-use crate::PollVote;
+use crate::config::ChainParams;
 use crate::generated::axelar::evm::v1beta1::event::Event;
 use crate::generated::axelar::evm::v1beta1::{
     ConfirmDepositRequest, ConfirmGatewayTxRequest, ConfirmGatewayTxsRequest,
@@ -12,6 +13,7 @@ use crate::generated::axelar::evm::v1beta1::{
 use crate::generated::axelar::reward::v1beta1::RefundMsgRequest;
 use crate::generated::axelar::tss::v1beta1::HeartBeatRequest;
 use crate::generated::axelar::vote::v1beta1::VoteRequest;
+use crate::polls::{PollCreation, PollRequest, PollVote};
 
 #[derive(Deserialize, Debug)]
 struct Response {
@@ -231,4 +233,94 @@ pub fn get_txs(block: &Block) -> Result<Vec<TxBody>, Box<dyn std::error::Error>>
     }
 
     Ok(ret)
+}
+
+pub struct RawBlockData {
+    pub heartbeat_addrs: Vec<String>,
+    pub poll_creations: Vec<PollCreation>,
+    pub votes: Vec<PollVote>,
+}
+
+pub fn process_block(
+    block: &Block,
+    chain_params: &HashMap<String, ChainParams>,
+    height: u64,
+) -> Result<RawBlockData, Box<dyn std::error::Error>> {
+    let txs = get_txs(block)?;
+
+    let heartbeat_addrs: Vec<String> = txs
+        .iter()
+        .flat_map(|tx| extract_heartbeat_requests(tx))
+        .map(|hb| hex::encode(&hb.sender))
+        .collect();
+
+    let raw_reqs = extract_raw_poll_requests(&txs);
+    let poll_requests: Vec<PollRequest> = raw_reqs
+        .iter()
+        .map(|r| match r {
+            RawPollRequests::GatewayTx(g) => vec![PollRequest::GatewayTx {
+                tx: hex::encode(&g.tx_id),
+                chain: g.chain.clone(),
+            }],
+            RawPollRequests::GatewayTxs(g) => g
+                .tx_ids
+                .iter()
+                .map(|tx_id| PollRequest::GatewayTx {
+                    tx: hex::encode(&tx_id),
+                    chain: g.chain.clone(),
+                })
+                .collect(),
+            RawPollRequests::Deposit(d) => vec![PollRequest::Deposit {
+                tx: hex::encode(&d.tx_id),
+                chain: d.chain.clone(),
+                burner_address: hex::encode(&d.burner_address),
+            }],
+            RawPollRequests::TransferKey(t) => vec![PollRequest::TransferKey {
+                tx: hex::encode(&t.tx_id),
+                chain: t.chain.clone(),
+            }],
+        })
+        .flatten()
+        .collect();
+
+    let mut poll_creations = Vec::new();
+    for request in poll_requests {
+        let chain = request.chain();
+        if let Some(params) = chain_params.get(&chain.to_lowercase()) {
+            let revote_period = params.revote_locking_period as u64;
+            let expiry_height = height + revote_period;
+
+            let pc = match request {
+                PollRequest::GatewayTx { chain, tx } => PollCreation::GatewayTx {
+                    tx,
+                    chain,
+                    expiry_height,
+                },
+                PollRequest::Deposit {
+                    chain,
+                    tx,
+                    burner_address,
+                } => PollCreation::Deposit {
+                    tx,
+                    chain,
+                    burner_address,
+                    expiry_height,
+                },
+                PollRequest::TransferKey { chain, tx } => PollCreation::TransferKey {
+                    tx,
+                    chain,
+                    expiry_height,
+                },
+            };
+            poll_creations.push(pc);
+        }
+    }
+
+    let votes = get_votes_from_txs(&txs);
+
+    Ok(RawBlockData {
+        heartbeat_addrs,
+        poll_creations,
+        votes,
+    })
 }

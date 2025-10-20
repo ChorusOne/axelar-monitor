@@ -1,4 +1,4 @@
-use crate::blocks::{Block, RawPollRequests, parse_block};
+use crate::blocks::{Block, parse_block};
 use crate::config::{ChainParams, Config};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -14,6 +14,8 @@ mod generated;
 mod metrics;
 mod polls;
 
+use polls::{Poll, PollCreation};
+
 #[derive(Debug, Clone, Copy)]
 enum Height {
     Latest,
@@ -22,7 +24,7 @@ enum Height {
 
 enum IoCommand {
     FetchBlock(Height),
-    FetchPollEvents(u64, Vec<PollCreation>),
+    FetchBlockResults(u64),
     FetchChainList,
     FetchChainParams(String),
     #[allow(dead_code)]
@@ -30,11 +32,8 @@ enum IoCommand {
 }
 
 enum IoResult {
-    Block(u64),
-    Heartbeats(u64, Vec<String>),
-    NewPollRequests(u64, Vec<PollRequest>),
-    PollMappings(u64, Vec<Poll>),
-    Votes(Vec<PollVote>),
+    Block(u64, Block),
+    BlockResults(u64, polls::BlockResults),
     FetchError(Height, String),
     ChainList(Vec<String>),
     ChainParams(config::ChainParams),
@@ -76,153 +75,6 @@ impl Into<ChainParams> for ChainParamsJson {
             name: self.chain,
             revote_locking_period: self.revote_locking_period.parse().unwrap(),
             voting_grace_period: self.voting_grace_period.parse().unwrap(),
-        }
-    }
-}
-
-#[derive(Debug)]
-struct PollVote {
-    poll_id: u64,
-    chain: String,
-    tx_id: String,
-    sender_id: String,
-    payload_hash: Option<String>,
-}
-
-#[derive(Debug)]
-enum PollRequest {
-    GatewayTx {
-        tx: String,
-        chain: String,
-    },
-    Deposit {
-        tx: String,
-        chain: String,
-        burner_address: String,
-    },
-    TransferKey {
-        tx: String,
-        chain: String,
-    },
-}
-
-impl PollRequest {
-    fn tx(&self) -> &str {
-        match self {
-            PollRequest::GatewayTx { tx, .. } => tx,
-            PollRequest::Deposit { tx, .. } => tx,
-            PollRequest::TransferKey { tx, .. } => tx,
-        }
-    }
-
-    fn chain(&self) -> &str {
-        match self {
-            PollRequest::GatewayTx { chain, .. } => chain,
-            PollRequest::Deposit { chain, .. } => chain,
-            PollRequest::TransferKey { chain, .. } => chain,
-        }
-    }
-}
-
-#[derive(Debug)]
-enum PollType {
-    GatewayTx {
-        chain: String,
-        tx: String,
-    },
-    Deposit {
-        chain: String,
-        tx: String,
-        burner_address: String,
-        // TODO: add asset field if needed (extract from ConfirmDepositStarted event)
-    },
-    TransferKey {
-        chain: String,
-        tx: String,
-    },
-}
-
-#[derive(Debug)]
-enum PollCreation {
-    GatewayTx {
-        tx: String,
-        expiry_height: u64,
-        chain: String,
-    },
-    Deposit {
-        tx: String,
-        expiry_height: u64,
-        chain: String,
-        burner_address: String,
-    },
-    TransferKey {
-        tx: String,
-        expiry_height: u64,
-        chain: String,
-    },
-}
-
-impl PollCreation {
-    fn into_polltype(&self, tx: String) -> PollType {
-        match &self {
-            PollCreation::GatewayTx { chain, .. } => PollType::GatewayTx {
-                chain: chain.clone(),
-                tx,
-            },
-            PollCreation::Deposit {
-                chain,
-                burner_address,
-                ..
-            } => PollType::Deposit {
-                chain: chain.clone(),
-                tx,
-                burner_address: burner_address.clone(),
-            },
-            PollCreation::TransferKey { chain, .. } => PollType::TransferKey {
-                chain: chain.clone(),
-                tx,
-            },
-        }
-    }
-    fn tx(&self) -> &str {
-        match self {
-            PollCreation::GatewayTx { tx, .. } => tx,
-            PollCreation::Deposit { tx, .. } => tx,
-            PollCreation::TransferKey { tx, .. } => tx,
-        }
-    }
-
-    fn expiry_height(&self) -> u64 {
-        match self {
-            PollCreation::GatewayTx { expiry_height, .. } => *expiry_height,
-            PollCreation::Deposit { expiry_height, .. } => *expiry_height,
-            PollCreation::TransferKey { expiry_height, .. } => *expiry_height,
-        }
-    }
-}
-
-#[derive(Debug)]
-struct Poll {
-    poll_id: u64,
-    poll_type: PollType,
-    votes: Vec<PollVote>,
-    expiry_height: u64,
-}
-
-impl Poll {
-    fn tx(&self) -> &str {
-        match &self.poll_type {
-            PollType::GatewayTx { tx, .. } => tx,
-            PollType::Deposit { tx, .. } => tx,
-            PollType::TransferKey { tx, .. } => tx,
-        }
-    }
-
-    fn chain(&self) -> &str {
-        match &self.poll_type {
-            PollType::GatewayTx { chain, .. } => chain,
-            PollType::Deposit { chain, .. } => chain,
-            PollType::TransferKey { chain, .. } => chain,
         }
     }
 }
@@ -274,80 +126,9 @@ fn io_thread_loop(
             Ok(IoCommand::FetchBlock(height)) => match get_block(&rpc_url, height) {
                 Ok((block, height)) => {
                     msg_tx
-                        .send(ProcessingMessage::IoResult(IoResult::Block(height)))
+                        .send(ProcessingMessage::IoResult(IoResult::Block(height, block)))
                         .unwrap();
-
-                    match blocks::get_txs(&block) {
-                        Ok(txs) => {
-                            let heartbeat_addrs: Vec<String> = txs
-                                .iter()
-                                .flat_map(|tx| blocks::extract_heartbeat_requests(tx))
-                                .map(|hb| hex::encode(&hb.sender))
-                                .collect();
-
-                            if !heartbeat_addrs.is_empty() {
-                                msg_tx
-                                    .send(ProcessingMessage::IoResult(IoResult::Heartbeats(
-                                        height,
-                                        heartbeat_addrs,
-                                    )))
-                                    .unwrap();
-                            }
-
-                            let reqs = blocks::extract_raw_poll_requests(&txs);
-
-                            let poll_requests: Vec<PollRequest> = reqs
-                                .iter()
-                                .map(|r| match r {
-                                    RawPollRequests::GatewayTx(g) => vec![PollRequest::GatewayTx {
-                                        tx: hex::encode(&g.tx_id),
-                                        chain: g.chain.clone(),
-                                    }],
-                                    RawPollRequests::GatewayTxs(g) => g
-                                        .tx_ids
-                                        .iter()
-                                        .map(|tx_id| PollRequest::GatewayTx {
-                                            tx: hex::encode(&tx_id),
-                                            chain: g.chain.clone(),
-                                        })
-                                        .collect(),
-                                    RawPollRequests::Deposit(d) => vec![PollRequest::Deposit {
-                                        tx: hex::encode(&d.tx_id),
-                                        chain: d.chain.clone(),
-                                        burner_address: hex::encode(&d.burner_address),
-                                    }],
-                                    RawPollRequests::TransferKey(t) => {
-                                        vec![PollRequest::TransferKey {
-                                            tx: hex::encode(&t.tx_id),
-                                            chain: t.chain.clone(),
-                                        }]
-                                    }
-                                })
-                                .flatten()
-                                .collect();
-
-                            if !poll_requests.is_empty() {
-                                msg_tx
-                                    .send(ProcessingMessage::IoResult(IoResult::NewPollRequests(
-                                        height,
-                                        poll_requests,
-                                    )))
-                                    .unwrap();
-                            }
-
-                            let votes = blocks::get_votes_from_txs(&txs);
-                            if !votes.is_empty() {
-                                msg_tx
-                                    .send(ProcessingMessage::IoResult(IoResult::Votes(votes)))
-                                    .unwrap();
-                            }
-                        }
-                        Err(e) => {
-                            error!("Failed to parse txs at height {}: {}", height, e);
-                        }
-                    }
                 }
-
                 Err(e) => {
                     msg_tx
                         .send(ProcessingMessage::IoResult(IoResult::FetchError(
@@ -357,6 +138,21 @@ fn io_thread_loop(
                         .unwrap();
                 }
             },
+            Ok(IoCommand::FetchBlockResults(height)) => {
+                match polls::get_block_results(&lcd_url, height) {
+                    Ok(block_results) => {
+                        msg_tx
+                            .send(ProcessingMessage::IoResult(IoResult::BlockResults(
+                                height,
+                                block_results,
+                            )))
+                            .unwrap();
+                    }
+                    Err(e) => {
+                        error!("Failed to fetch block results for height {}: {}", height, e);
+                    }
+                }
+            }
             Ok(IoCommand::FetchChainList) => match get_chain_list(&rpc_url) {
                 Ok(chains) => {
                     info!("fetched chain list: {} chains", chains.len());
@@ -384,50 +180,6 @@ fn io_thread_loop(
                     error!("Failed to fetch params for chain {}: {}", &chain, e);
                 }
             },
-            // merge poll-creation txs with block_results
-            // into a complete poll (with poll_id)
-            Ok(IoCommand::FetchPollEvents(height, poll_creations)) => {
-                match polls::get_block_results(&lcd_url, height) {
-                    Ok(block_results) => {
-                        let mut complete_polls = Vec::new();
-
-                        let poll_events = polls::extract_all_poll_events(&block_results);
-                        let tx_to_poll_ids: HashMap<String, u64> = poll_events
-                            .iter()
-                            .map(|pe| (pe.tx(), pe.poll_id()))
-                            .collect();
-
-                        for creation in poll_creations {
-                            let tx_id = creation.tx();
-                            if let Some(poll_id) = tx_to_poll_ids.get(tx_id) {
-                                complete_polls.push(Poll {
-                                    poll_id: *poll_id,
-                                    votes: vec![],
-                                    expiry_height: creation.expiry_height(),
-                                    poll_type: creation.into_polltype(tx_id.into()),
-                                });
-                            } else {
-                                warn!(
-                                    "Got poll event for tx_id={} but no matching PollCreation",
-                                    tx_id
-                                );
-                            }
-                        }
-
-                        if !complete_polls.is_empty() {
-                            msg_tx
-                                .send(ProcessingMessage::IoResult(IoResult::PollMappings(
-                                    height,
-                                    complete_polls,
-                                )))
-                                .unwrap();
-                        }
-                    }
-                    Err(e) => {
-                        error!("Failed to fetch block results for height {}: {}", height, e);
-                    }
-                }
-            }
             Err(_) => break,
         }
     }
@@ -450,6 +202,7 @@ fn processing_loop(
     let mut chain_params: HashMap<String, ChainParams> =
         HashMap::with_capacity(config.chain_params.len());
     let mut polls: HashMap<u64, Poll> = HashMap::new();
+    let mut pending_poll_creations: HashMap<u64, Vec<PollCreation>> = HashMap::new();
 
     for chain_param in config.chain_params {
         chain_params.insert(chain_param.name.to_lowercase(), chain_param);
@@ -473,109 +226,86 @@ fn processing_loop(
                         }
                     }
                 }
-                IoResult::Block(height) => {
+                IoResult::Block(height, block) => {
                     chain_height = std::cmp::max(chain_height, height);
                     info!("at height {chain_height}");
                     polls.retain(|_, v| v.expiry_height > height as u64);
                     debug!("open polls after pruning {}", polls.len());
-                }
-                IoResult::Heartbeats(height, addresses) => {
-                    for addr in addresses {
-                        for bc in &config.broadcaster {
-                            if bc.address == addr {
-                                info!("Height {}: {} heartbeat detected", height, bc.name);
-                                last_heartbeat.insert(bc.name.clone(), height);
-                                break;
-                            }
-                        }
-                    }
-                }
-                // merge poll data (tx) with chain params
-                IoResult::NewPollRequests(height, poll_requests) => {
-                    info!(
-                        "Processing {} poll_requests for height {}",
-                        poll_requests.len(),
-                        height
-                    );
 
-                    let mut poll_creations = Vec::new();
-
-                    // Convert PollRequest to PollCreation by calculating expiry heights
-                    for request in poll_requests {
-                        info!(
-                            "Processing poll request: tx={}, chain={}",
-                            request.tx(),
-                            request.chain()
-                        );
-                        let chain = request.chain();
-                        if let Some(params) = chain_params.get(&chain.to_lowercase()) {
-                            let revote_period = params.revote_locking_period as u64;
-                            let expiry_height = height as u64 + revote_period;
-
-                            let pc = match request {
-                                PollRequest::GatewayTx { chain, tx } => PollCreation::GatewayTx {
-                                    tx,
-                                    chain,
-                                    expiry_height,
-                                },
-                                PollRequest::Deposit {
-                                    chain,
-                                    tx,
-                                    burner_address,
-                                } => PollCreation::Deposit {
-                                    tx,
-                                    chain,
-                                    burner_address,
-                                    expiry_height,
-                                },
-                                PollRequest::TransferKey { chain, tx } => {
-                                    PollCreation::TransferKey {
-                                        tx,
-                                        chain,
-                                        expiry_height,
+                    match blocks::process_block(&block, &chain_params, height) {
+                        Ok(data) => {
+                            for addr in data.heartbeat_addrs {
+                                for bc in &config.broadcaster {
+                                    if bc.address == addr {
+                                        info!("Height {}: {} heartbeat detected", height, bc.name);
+                                        last_heartbeat.insert(bc.name.clone(), height);
+                                        break;
                                     }
                                 }
-                            };
-                            info!("Poll complete {:?}", pc);
-                            poll_creations.push(pc);
-                        } else {
-                            error!(
-                                "Chain params not available for chain: {}. Skipping poll creation.",
-                                chain
-                            );
+                            }
+
+                            if !data.poll_creations.is_empty() {
+                                info!(
+                                    "Storing {} poll_creations for height {}, fetching block_results",
+                                    data.poll_creations.len(),
+                                    height
+                                );
+                                pending_poll_creations.insert(height, data.poll_creations);
+                                cmd_tx.send(IoCommand::FetchBlockResults(height)).unwrap();
+                            }
+
+                            for vote in data.votes {
+                                if let Some(poll) = polls.get_mut(&vote.poll_id) {
+                                    info!("vote: {:?}", vote);
+                                    poll.votes.push(vote);
+                                } else {
+                                    warn!(
+                                        "Got vote on poll_id={} and we don't know about it. It's fine if this program just started (~90s)",
+                                        vote.poll_id
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to process block at height {}: {}", height, e);
                         }
                     }
-
-                    if !poll_creations.is_empty() {
-                        debug!(
-                            "Sending FetchPollEvents for height {} with {} poll_creations",
-                            height,
-                            poll_creations.len()
+                }
+                IoResult::BlockResults(height, block_results) => {
+                    // Get pending poll creations for this height
+                    if let Some(poll_creations) = pending_poll_creations.remove(&height) {
+                        info!(
+                            "Processing {} poll_creations with block_results for height {}",
+                            poll_creations.len(),
+                            height
                         );
-                        cmd_tx
-                            .send(IoCommand::FetchPollEvents(height, poll_creations))
-                            .unwrap();
-                    }
-                }
-                IoResult::PollMappings(height, complete_polls) => {
-                    for poll in complete_polls {
-                        info!("Received poll at {height} = {poll:?}");
-                        polls.insert(poll.poll_id, poll);
-                    }
-                }
-                IoResult::Votes(votes) => {
-                    for vote in votes {
-                        let poll = polls.get_mut(&vote.poll_id);
 
-                        if let Some(p) = poll {
-                            info!("vote: {:?}", vote);
-                            p.votes.push(vote);
-                        } else {
-                            warn!(
-                                "Got vote on poll_id={} and we don't know about it. It's fine if this program just started (~90s)",
-                                vote.poll_id
-                            );
+                        // Extract poll events
+                        let poll_events = polls::extract_all_poll_events(&block_results);
+                        let tx_to_poll_ids: HashMap<String, u64> = poll_events
+                            .iter()
+                            .map(|pe| (pe.tx(), pe.poll_id()))
+                            .collect();
+
+                        // Merge poll creations with events to create complete polls
+                        for creation in poll_creations {
+                            let tx_id = creation.tx();
+                            if let Some(poll_id) = tx_to_poll_ids.get(tx_id) {
+                                let poll = creation.into_poll(*poll_id, tx_id.into());
+                                info!("Created poll at {height} = {poll:?}");
+                                polls.insert(poll.poll_id, poll);
+                            } else {
+                                warn!(
+                                    "Got poll creation for tx_id={} but no matching event",
+                                    tx_id
+                                );
+                            }
                         }
+                    } else {
+                        debug!(
+                            "Received block_results for height {} but no pending poll creations",
+                            height
+                        );
                     }
                 }
                 IoResult::ChainParams(chain) => {
