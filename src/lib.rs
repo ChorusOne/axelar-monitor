@@ -432,3 +432,250 @@ pub fn process_single_io_command(cmd: IoCommand, rpc_url: &str, lcd_url: &str) -
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Broadcaster;
+    use crate::polls::{PollType, PollVote};
+
+    fn create_test_poll(poll_id: u64, votes: Vec<PollVote>) -> Poll {
+        Poll {
+            poll_id,
+            poll_type: PollType::GatewayTx {
+                chain: "Ethereum".to_string(),
+                tx: "test_tx".to_string(),
+            },
+            votes,
+            expiry_height: 1000,
+        }
+    }
+
+    #[test]
+    fn test_analyze_poll_completion_empty_votes() {
+        let config = Config {
+            rpc_url: "".to_string(),
+            lcd_url: "".to_string(),
+            poll_interval_seconds: 5,
+            metrics_port: 9090,
+            broadcaster: vec![],
+            chain_params: vec![],
+        };
+
+        let poll = create_test_poll(1, vec![]);
+        let mut stats = HashMap::new();
+
+        analyze_poll_completion(&poll, &config, &mut stats);
+
+        assert_eq!(stats.len(), 0, "No stats should be created for empty votes");
+    }
+
+    #[test]
+    fn test_analyze_poll_completion_unanimous_vote() {
+        let config = Config {
+            rpc_url: "".to_string(),
+            lcd_url: "".to_string(),
+            poll_interval_seconds: 5,
+            metrics_port: 9090,
+            broadcaster: vec![
+                Broadcaster {
+                    name: "broadcaster1".to_string(),
+                    address: "addr1".to_string(),
+                },
+                Broadcaster {
+                    name: "broadcaster2".to_string(),
+                    address: "addr2".to_string(),
+                },
+            ],
+            chain_params: vec![],
+        };
+
+        let votes = vec![
+            PollVote {
+                poll_id: 1,
+                chain: "ethereum".to_string(),
+                tx_id: "correct_tx".to_string(),
+                sender_id: "addr1".to_string(),
+                payload_hash: None,
+            },
+            PollVote {
+                poll_id: 1,
+                chain: "ethereum".to_string(),
+                tx_id: "correct_tx".to_string(),
+                sender_id: "addr2".to_string(),
+                payload_hash: None,
+            },
+        ];
+
+        let poll = create_test_poll(1, votes);
+        let mut stats = HashMap::new();
+
+        analyze_poll_completion(&poll, &config, &mut stats);
+
+        let key1 = ("broadcaster1".to_string(), "ethereum".to_string());
+        let key2 = ("broadcaster2".to_string(), "ethereum".to_string());
+
+        assert_eq!(stats.get(&key1).unwrap().total_votes, 1);
+        assert_eq!(stats.get(&key1).unwrap().disagreed_with_majority, 0);
+        assert_eq!(stats.get(&key2).unwrap().total_votes, 1);
+        assert_eq!(stats.get(&key2).unwrap().disagreed_with_majority, 0);
+    }
+
+    #[test]
+    fn test_analyze_poll_completion_with_disagreement() {
+        let config = Config {
+            rpc_url: "".to_string(),
+            lcd_url: "".to_string(),
+            poll_interval_seconds: 5,
+            metrics_port: 9090,
+            broadcaster: vec![
+                Broadcaster {
+                    name: "good_broadcaster".to_string(),
+                    address: "good_addr".to_string(),
+                },
+                Broadcaster {
+                    name: "bad_broadcaster".to_string(),
+                    address: "bad_addr".to_string(),
+                },
+            ],
+            chain_params: vec![],
+        };
+
+        let votes = vec![
+            PollVote {
+                poll_id: 1,
+                chain: "ethereum".to_string(),
+                tx_id: "correct_tx".to_string(),
+                sender_id: "good_addr".to_string(),
+                payload_hash: None,
+            },
+            PollVote {
+                poll_id: 1,
+                chain: "ethereum".to_string(),
+                tx_id: "correct_tx".to_string(),
+                sender_id: "good_addr".to_string(),
+                payload_hash: None,
+            },
+            PollVote {
+                poll_id: 1,
+                chain: "ethereum".to_string(),
+                tx_id: "wrong_tx".to_string(),
+                sender_id: "bad_addr".to_string(),
+                payload_hash: None,
+            },
+        ];
+
+        let poll = create_test_poll(1, votes);
+        let mut stats = HashMap::new();
+
+        analyze_poll_completion(&poll, &config, &mut stats);
+
+        let good_key = ("good_broadcaster".to_string(), "ethereum".to_string());
+        let bad_key = ("bad_broadcaster".to_string(), "ethereum".to_string());
+
+        assert_eq!(stats.get(&good_key).unwrap().total_votes, 2);
+        assert_eq!(stats.get(&good_key).unwrap().disagreed_with_majority, 0);
+        assert_eq!(stats.get(&bad_key).unwrap().total_votes, 1);
+        assert_eq!(stats.get(&bad_key).unwrap().disagreed_with_majority, 1);
+    }
+
+    #[test]
+    fn test_analyze_poll_completion_empty_tx_id_votes() {
+        let config = Config {
+            rpc_url: "".to_string(),
+            lcd_url: "".to_string(),
+            poll_interval_seconds: 5,
+            metrics_port: 9090,
+            broadcaster: vec![
+                Broadcaster {
+                    name: "correct_broadcaster".to_string(),
+                    address: "correct_addr".to_string(),
+                },
+                Broadcaster {
+                    name: "empty_broadcaster".to_string(),
+                    address: "empty_addr".to_string(),
+                },
+            ],
+            chain_params: vec![],
+        };
+
+        let votes = vec![
+            PollVote {
+                poll_id: 1,
+                chain: "fantom".to_string(),
+                tx_id: "correct_tx".to_string(),
+                sender_id: "correct_addr".to_string(),
+                payload_hash: None,
+            },
+            PollVote {
+                poll_id: 1,
+                chain: "fantom".to_string(),
+                tx_id: "correct_tx".to_string(),
+                sender_id: "correct_addr".to_string(),
+                payload_hash: None,
+            },
+            PollVote {
+                poll_id: 1,
+                chain: "fantom".to_string(),
+                tx_id: "".to_string(),
+                sender_id: "empty_addr".to_string(),
+                payload_hash: None,
+            },
+        ];
+
+        let poll = create_test_poll(1, votes);
+        let mut stats = HashMap::new();
+
+        analyze_poll_completion(&poll, &config, &mut stats);
+
+        let correct_key = ("correct_broadcaster".to_string(), "fantom".to_string());
+        let empty_key = ("empty_broadcaster".to_string(), "fantom".to_string());
+
+        assert_eq!(stats.get(&correct_key).unwrap().total_votes, 2);
+        assert_eq!(stats.get(&correct_key).unwrap().disagreed_with_majority, 0);
+        assert_eq!(stats.get(&empty_key).unwrap().total_votes, 1);
+        assert_eq!(stats.get(&empty_key).unwrap().disagreed_with_majority, 1);
+    }
+
+    #[test]
+    fn test_analyze_poll_completion_ignores_unknown_broadcasters() {
+        let config = Config {
+            rpc_url: "".to_string(),
+            lcd_url: "".to_string(),
+            poll_interval_seconds: 5,
+            metrics_port: 9090,
+            broadcaster: vec![Broadcaster {
+                name: "known_broadcaster".to_string(),
+                address: "known_addr".to_string(),
+            }],
+            chain_params: vec![],
+        };
+
+        let votes = vec![
+            PollVote {
+                poll_id: 1,
+                chain: "ethereum".to_string(),
+                tx_id: "correct_tx".to_string(),
+                sender_id: "known_addr".to_string(),
+                payload_hash: None,
+            },
+            PollVote {
+                poll_id: 1,
+                chain: "ethereum".to_string(),
+                tx_id: "correct_tx".to_string(),
+                sender_id: "unknown_addr".to_string(),
+                payload_hash: None,
+            },
+        ];
+
+        let poll = create_test_poll(1, votes);
+        let mut stats = HashMap::new();
+
+        analyze_poll_completion(&poll, &config, &mut stats);
+
+        assert_eq!(stats.len(), 1, "Only known broadcaster should be tracked");
+        let key = ("known_broadcaster".to_string(), "ethereum".to_string());
+        assert_eq!(stats.get(&key).unwrap().total_votes, 1);
+        assert_eq!(stats.get(&key).unwrap().disagreed_with_majority, 0);
+    }
+}

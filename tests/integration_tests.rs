@@ -67,6 +67,11 @@ fn create_test_config() -> Config {
                 revote_locking_period: 15,
                 voting_grace_period: 3,
             },
+            config::ChainParams {
+                name: "blast".to_string(),
+                revote_locking_period: 15,
+                voting_grace_period: 3,
+            },
         ],
     }
 }
@@ -301,4 +306,94 @@ fn test_full_poll_flow_confirm_token() {
         }
         _ => panic!("Expected GatewayTx poll type (Token polls map to GatewayTx)"),
     }
+}
+
+#[test]
+fn test_full_poll_flow_confirm_gateway_tx_started() {
+    let config = create_test_config();
+    let mut state = ProcessingState::new(&config);
+    let height = 20414583;
+
+    let io_responses = mock_process_io_command(
+        IoCommand::FetchBlock(Height::Specific(height)),
+        "confirm_gateway_tx",
+        height,
+    );
+
+    for io_resp in io_responses {
+        if let IoResponse::SendMessage(msg) = io_resp {
+            let proc_responses = process_single_message(msg, &mut state, &config);
+
+            assert!(
+                proc_responses.iter().any(|r| matches!(
+                    r,
+                    ProcessingResponse::SendIoCommand(IoCommand::FetchBlockResults(_))
+                )),
+                "Should request BlockResults"
+            );
+
+            for proc_resp in proc_responses {
+                if let ProcessingResponse::SendIoCommand(cmd) = proc_resp {
+                    let io_responses2 = mock_process_io_command(cmd, "confirm_gateway_tx", height);
+
+                    for io_resp2 in io_responses2 {
+                        if let IoResponse::SendMessage(msg2) = io_resp2 {
+                            process_single_message(msg2, &mut state, &config);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    assert_eq!(state.polls.len(), 1, "Should have created 1 poll");
+    assert!(
+        state.polls.contains_key(&2846687),
+        "Should contain poll_id 2846687"
+    );
+
+    let poll = &state.polls[&2846687];
+    match &poll.poll_type {
+        polls::PollType::GatewayTx { tx, chain } => {
+            assert_eq!(
+                tx,
+                "3016e9691a809ae405ffc764fc9fe09eb09535b1806e688067527a9e38c979a0"
+            );
+            assert_eq!(chain, "blast");
+        }
+        _ => panic!("Expected GatewayTx poll type"),
+    }
+}
+
+#[test]
+fn test_empty_block_no_polls_no_votes() {
+    let config = create_test_config();
+    let mut state = ProcessingState::new(&config);
+    let height = 20432569;
+
+    let io_responses = mock_process_io_command(
+        IoCommand::FetchBlock(Height::Specific(height)),
+        "empty_block",
+        height,
+    );
+
+    for io_resp in io_responses {
+        if let IoResponse::SendMessage(msg) = io_resp {
+            let proc_responses = process_single_message(msg, &mut state, &config);
+
+            for proc_resp in proc_responses {
+                if let ProcessingResponse::SendIoCommand(cmd) = proc_resp {
+                    let io_responses2 = mock_process_io_command(cmd, "empty_block", height);
+
+                    for io_resp2 in io_responses2 {
+                        if let IoResponse::SendMessage(msg2) = io_resp2 {
+                            process_single_message(msg2, &mut state, &config);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    assert_eq!(state.polls.len(), 0, "Should have created 0 polls");
 }

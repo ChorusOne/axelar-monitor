@@ -33,15 +33,6 @@ pub enum PollRequest {
 }
 
 impl PollRequest {
-    fn tx(&self) -> &str {
-        match self {
-            PollRequest::GatewayTx { tx, .. } => tx,
-            PollRequest::Deposit { tx, .. } => tx,
-            PollRequest::TransferKey { tx, .. } => tx,
-            PollRequest::Token { tx, .. } => tx,
-        }
-    }
-
     pub fn chain(&self) -> &str {
         match self {
             PollRequest::GatewayTx { chain, .. } => chain,
@@ -155,24 +146,6 @@ pub struct Poll {
     pub poll_type: PollType,
     pub votes: Vec<PollVote>,
     pub expiry_height: u64,
-}
-
-impl Poll {
-    fn tx(&self) -> &str {
-        match &self.poll_type {
-            PollType::GatewayTx { tx, .. } => tx,
-            PollType::Deposit { tx, .. } => tx,
-            PollType::TransferKey { tx, .. } => tx,
-        }
-    }
-
-    fn chain(&self) -> &str {
-        match &self.poll_type {
-            PollType::GatewayTx { chain, .. } => chain,
-            PollType::Deposit { chain, .. } => chain,
-            PollType::TransferKey { chain, .. } => chain,
-        }
-    }
 }
 
 #[derive(Deserialize, Debug)]
