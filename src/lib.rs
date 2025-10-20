@@ -23,6 +23,7 @@ pub enum IoCommand {
     FetchBlockResults(u64),
     FetchChainList,
     FetchChainParams(String),
+    FetchHead,
     #[allow(dead_code)]
     Shutdown,
 }
@@ -33,6 +34,7 @@ pub enum IoResult {
     FetchError(Height, String),
     ChainList(Vec<String>),
     ChainParams(config::ChainParams),
+    Head(u64),
 }
 
 #[derive(Debug)]
@@ -60,6 +62,8 @@ pub struct ProcessingState {
     pub chain_params: HashMap<String, ChainParams>,
     pub polls: HashMap<u64, Poll>,
     pub pending_poll_creations: HashMap<u64, Vec<PollCreation>>,
+    pub chain_tip: u64,
+    pub last_processed_height: u64,
 }
 
 impl ProcessingState {
@@ -83,6 +87,8 @@ impl ProcessingState {
             chain_params,
             polls: HashMap::new(),
             pending_poll_creations: HashMap::new(),
+            chain_tip: 0,
+            last_processed_height: 0,
         }
     }
 }
@@ -122,6 +128,7 @@ pub fn process_single_message(
             }
             IoResult::Block(height, block) => {
                 state.chain_height = std::cmp::max(state.chain_height, height);
+                state.last_processed_height = height;
                 info!("at height {}", state.chain_height);
                 state.polls.retain(|_, v| v.expiry_height > height as u64);
                 debug!("open polls after pruning {}", state.polls.len());
@@ -163,6 +170,17 @@ pub fn process_single_message(
                                     vote.poll_id
                                 );
                             }
+                        }
+
+                        if state.chain_tip > state.last_processed_height {
+                            let next_height = state.last_processed_height + 1;
+                            debug!(
+                                "Still behind chain tip, immediately fetching block {}",
+                                next_height
+                            );
+                            responses.push(ProcessingResponse::SendIoCommand(
+                                IoCommand::FetchBlock(Height::Specific(next_height)),
+                            ));
                         }
 
                         responses
@@ -209,10 +227,28 @@ pub fn process_single_message(
                 vec![]
             }
             IoResult::ChainParams(chain) => {
-                state
-                    .chain_params
-                    .insert(chain.name.to_lowercase(), chain);
+                state.chain_params.insert(chain.name.to_lowercase(), chain);
                 vec![]
+            }
+            IoResult::Head(height) => {
+                state.chain_tip = height;
+                debug!("Chain tip is at height {}", height);
+
+                if state.last_processed_height == 0 {
+                    info!("Initializing: starting from current chain tip {}", height);
+                    state.last_processed_height = height - 1;
+                }
+
+                if state.chain_tip > state.last_processed_height {
+                    let next_height = state.last_processed_height + 1;
+                    info!("Behind chain tip, fetching block {}", next_height);
+                    vec![ProcessingResponse::SendIoCommand(IoCommand::FetchBlock(
+                        Height::Specific(next_height),
+                    ))]
+                } else {
+                    debug!("Caught up to chain tip");
+                    vec![]
+                }
             }
         },
         ProcessingMessage::QueryMetrics(response_tx) => {

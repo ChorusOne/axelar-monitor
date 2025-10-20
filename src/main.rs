@@ -58,6 +58,15 @@ fn get_block(base_url: &str, height: Height) -> Result<(Block, u64), Box<dyn std
     Ok((b, h))
 }
 
+fn get_head(base_url: &str) -> Result<u64, Box<dyn std::error::Error>> {
+    let url = format!("{}/cosmos/base/tendermint/v1beta1/blocks/latest", base_url);
+    let mut response = ureq::get(&url).call()?;
+    let body = response.body_mut().read_to_string()?;
+    let b = parse_block(&body)?;
+    let h = b.header.height.parse()?;
+    Ok(h)
+}
+
 fn get_chain_list(base_url: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let url = format!("{}/axelar/evm/v1beta1/chains", base_url);
     let mut response = ureq::get(&url).call()?;
@@ -105,6 +114,15 @@ fn process_single_io_command(cmd: IoCommand, rpc_url: &str, lcd_url: &str) -> Ve
             }
             Err(e) => {
                 error!("Failed to fetch chain list: {}", e);
+                vec![]
+            }
+        },
+        IoCommand::FetchHead => match get_head(rpc_url) {
+            Ok(height) => vec![IoResponse::SendMessage(ProcessingMessage::IoResult(
+                IoResult::Head(height),
+            ))],
+            Err(e) => {
+                error!("Failed to fetch chain head: {}", e);
                 vec![]
             }
         },
@@ -236,11 +254,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     } else {
         thread::spawn(move || {
+            feeder_tx.send(IoCommand::FetchHead).unwrap();
             loop {
-                feeder_tx
-                    .send(IoCommand::FetchBlock(Height::Latest))
-                    .unwrap();
                 thread::sleep(Duration::from_secs(poll_interval));
+                feeder_tx.send(IoCommand::FetchHead).unwrap();
             }
         });
         let msg_tx_metrics = msg_tx.clone();
