@@ -20,6 +20,3 @@ ureq = "3.1.2"
 
 [build-dependencies]
 prost-build = "0.13"
-
-[dev-dependencies]
-tiny_http = "0.12"
