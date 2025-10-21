@@ -71,6 +71,15 @@ pub fn metrics_server_loop(msg_tx: mpsc::Sender<ProcessingMessage>, port: u16, n
                     ));
                 }
 
+                metrics.push_str(&format!("# HELP {}_broadcaster_votes_missed Total number of polls where broadcaster did not vote\n", namespace));
+                metrics.push_str(&format!("# TYPE {}_broadcaster_votes_missed counter\n", namespace));
+                for ((broadcaster, chain), stats) in &sorted_stats {
+                    metrics.push_str(&format!(
+                        "{}_broadcaster_votes_missed{{chain=\"{}\",broadcaster=\"{}\"}} {}\n",
+                        namespace, chain, broadcaster, stats.missed_votes
+                    ));
+                }
+
                 let response = tiny_http::Response::from_string(metrics);
                 let _ = request.respond(response);
             } else {

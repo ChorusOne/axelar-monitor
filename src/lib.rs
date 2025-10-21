@@ -44,6 +44,7 @@ pub enum IoResult {
 pub struct BroadcasterStats {
     pub total_votes: u64,
     pub disagreed_with_majority: u64,
+    pub missed_votes: u64,
 }
 
 #[derive(Debug)]
@@ -100,6 +101,7 @@ impl ProcessingState {
                     BroadcasterStats {
                         total_votes: 0,
                         disagreed_with_majority: 0,
+                        missed_votes: 0,
                     },
                 );
             }
@@ -123,10 +125,6 @@ fn analyze_poll_completion(
     config: &Config,
     broadcaster_stats: &mut HashMap<(String, String), BroadcasterStats>,
 ) {
-    if poll.votes.is_empty() {
-        return;
-    }
-
     let mut tx_id_counts: HashMap<&str, u64> = HashMap::new();
     for vote in &poll.votes {
         *tx_id_counts.entry(&vote.tx_id).or_insert(0) += 1;
@@ -137,19 +135,43 @@ fn analyze_poll_completion(
         .max_by_key(|(_, count)| *count)
         .map(|(tx_id, _)| *tx_id);
 
-    if let Some(majority) = majority_tx_id {
-        let sender_to_broadcaster: HashMap<String, &str> = config
-            .broadcaster
-            .iter()
-            .map(|bc| (bc.address.clone(), bc.name.as_str()))
-            .collect();
+    let sender_to_broadcaster: HashMap<String, &str> = config
+        .broadcaster
+        .iter()
+        .map(|bc| (bc.address.clone(), bc.name.as_str()))
+        .collect();
 
+    let voters: std::collections::HashSet<&str> = poll
+        .votes
+        .iter()
+        .filter_map(|vote| sender_to_broadcaster.get(&vote.sender_id).copied())
+        .collect();
+
+    for broadcaster in &config.broadcaster {
+        let key = (broadcaster.name.clone(), poll.data.chain.to_lowercase());
+        let stats = broadcaster_stats.entry(key).or_insert(BroadcasterStats {
+            total_votes: 0,
+            disagreed_with_majority: 0,
+            missed_votes: 0,
+        });
+
+        if !voters.contains(broadcaster.name.as_str()) {
+            stats.missed_votes += 1;
+            warn!(
+                "Missed vote: broadcaster={} chain={} poll_id={}",
+                broadcaster.name, poll.data.chain, poll.poll_id
+            );
+        }
+    }
+
+    if let Some(majority) = majority_tx_id {
         for vote in &poll.votes {
             if let Some(broadcaster_name) = sender_to_broadcaster.get(&vote.sender_id) {
                 let key = (broadcaster_name.to_string(), vote.chain.to_lowercase());
                 let stats = broadcaster_stats.entry(key).or_insert(BroadcasterStats {
                     total_votes: 0,
                     disagreed_with_majority: 0,
+                    missed_votes: 0,
                 });
 
                 stats.total_votes += 1;
@@ -324,6 +346,7 @@ pub fn process_single_message(
                         .or_insert(BroadcasterStats {
                             total_votes: 0,
                             disagreed_with_majority: 0,
+                            missed_votes: 0,
                         });
                 }
 
@@ -513,8 +536,10 @@ mod tests {
 
         assert_eq!(stats.get(&key1).unwrap().total_votes, 1);
         assert_eq!(stats.get(&key1).unwrap().disagreed_with_majority, 0);
+        assert_eq!(stats.get(&key1).unwrap().missed_votes, 0);
         assert_eq!(stats.get(&key2).unwrap().total_votes, 1);
         assert_eq!(stats.get(&key2).unwrap().disagreed_with_majority, 0);
+        assert_eq!(stats.get(&key2).unwrap().missed_votes, 0);
     }
 
     #[test]
@@ -572,8 +597,10 @@ mod tests {
 
         assert_eq!(stats.get(&good_key).unwrap().total_votes, 2);
         assert_eq!(stats.get(&good_key).unwrap().disagreed_with_majority, 0);
+        assert_eq!(stats.get(&good_key).unwrap().missed_votes, 0);
         assert_eq!(stats.get(&bad_key).unwrap().total_votes, 1);
         assert_eq!(stats.get(&bad_key).unwrap().disagreed_with_majority, 1);
+        assert_eq!(stats.get(&bad_key).unwrap().missed_votes, 0);
     }
 
     #[test]
@@ -631,8 +658,10 @@ mod tests {
 
         assert_eq!(stats.get(&correct_key).unwrap().total_votes, 2);
         assert_eq!(stats.get(&correct_key).unwrap().disagreed_with_majority, 0);
+        assert_eq!(stats.get(&correct_key).unwrap().missed_votes, 0);
         assert_eq!(stats.get(&empty_key).unwrap().total_votes, 1);
         assert_eq!(stats.get(&empty_key).unwrap().disagreed_with_majority, 1);
+        assert_eq!(stats.get(&empty_key).unwrap().missed_votes, 0);
     }
 
     #[test]
@@ -676,5 +705,67 @@ mod tests {
         let key = ("known_broadcaster".to_string(), "ethereum".to_string());
         assert_eq!(stats.get(&key).unwrap().total_votes, 1);
         assert_eq!(stats.get(&key).unwrap().disagreed_with_majority, 0);
+        assert_eq!(stats.get(&key).unwrap().missed_votes, 0);
+    }
+
+    #[test]
+    fn test_analyze_poll_completion_tracks_missed_votes() {
+        let config = Config {
+            rpc_url: "".to_string(),
+            lcd_url: "".to_string(),
+            poll_interval_seconds: 5,
+            metrics_port: 9090,
+            metrics_namespace: "axelar_monitor".to_string(),
+            broadcaster: vec![
+                Broadcaster {
+                    name: "active_broadcaster".to_string(),
+                    address: "active_addr".to_string(),
+                },
+                Broadcaster {
+                    name: "inactive_broadcaster".to_string(),
+                    address: "inactive_addr".to_string(),
+                },
+                Broadcaster {
+                    name: "another_inactive".to_string(),
+                    address: "another_inactive_addr".to_string(),
+                },
+            ],
+            chain_params: vec![],
+        };
+
+        let votes = vec![PollVote {
+            poll_id: 1,
+            chain: "ethereum".to_string(),
+            tx_id: "correct_tx".to_string(),
+            sender_id: "active_addr".to_string(),
+            payload_hash: None,
+        }];
+
+        let poll = create_test_poll(1, votes);
+        let mut stats = HashMap::new();
+
+        analyze_poll_completion(&poll, &config, &mut stats);
+
+        let active_key = ("active_broadcaster".to_string(), "ethereum".to_string());
+        let inactive_key = ("inactive_broadcaster".to_string(), "ethereum".to_string());
+        let another_inactive_key = ("another_inactive".to_string(), "ethereum".to_string());
+
+        assert_eq!(stats.get(&active_key).unwrap().total_votes, 1);
+        assert_eq!(stats.get(&active_key).unwrap().disagreed_with_majority, 0);
+        assert_eq!(stats.get(&active_key).unwrap().missed_votes, 0);
+
+        assert_eq!(stats.get(&inactive_key).unwrap().total_votes, 0);
+        assert_eq!(
+            stats.get(&inactive_key).unwrap().disagreed_with_majority,
+            0
+        );
+        assert_eq!(stats.get(&inactive_key).unwrap().missed_votes, 1);
+
+        assert_eq!(stats.get(&another_inactive_key).unwrap().total_votes, 0);
+        assert_eq!(
+            stats.get(&another_inactive_key).unwrap().disagreed_with_majority,
+            0
+        );
+        assert_eq!(stats.get(&another_inactive_key).unwrap().missed_votes, 1);
     }
 }
