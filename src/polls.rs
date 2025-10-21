@@ -11,141 +11,45 @@ pub struct PollVote {
     pub payload_hash: Option<String>,
 }
 
-#[derive(Debug)]
-pub enum PollRequest {
-    GatewayTx {
-        tx: String,
-        chain: String,
-    },
-    Deposit {
-        tx: String,
-        chain: String,
-        burner_address: String,
-    },
-    TransferKey {
-        tx: String,
-        chain: String,
-    },
-    Token {
-        tx: String,
-        chain: String,
-    },
+#[derive(Debug, Clone, PartialEq)]
+pub enum PollKind {
+    GatewayTx,
+    Deposit { burner_address: String },
+    TransferKey,
+    Token,
+}
+
+#[derive(Debug, Clone)]
+pub struct PollRequest {
+    pub kind: PollKind,
+    pub chain: String,
+    pub tx: String,
 }
 
 impl PollRequest {
-    pub fn chain(&self) -> &str {
-        match self {
-            PollRequest::GatewayTx { chain, .. } => chain,
-            PollRequest::Deposit { chain, .. } => chain,
-            PollRequest::TransferKey { chain, .. } => chain,
-            PollRequest::Token { chain, .. } => chain,
+    pub fn with_expiry(self, expiry_height: u64) -> PollData {
+        PollData {
+            kind: self.kind,
+            chain: self.chain,
+            tx: self.tx,
+            expiry_height,
         }
     }
 }
 
-#[derive(Debug)]
-pub enum PollType {
-    GatewayTx {
-        chain: String,
-        tx: String,
-    },
-    Deposit {
-        chain: String,
-        tx: String,
-        burner_address: String,
-        // TODO: add asset field if needed (extract from ConfirmDepositStarted event)
-    },
-    TransferKey {
-        chain: String,
-        tx: String,
-    },
-}
-
-#[derive(Debug)]
-pub enum PollCreation {
-    GatewayTx {
-        tx: String,
-        expiry_height: u64,
-        chain: String,
-    },
-    Deposit {
-        tx: String,
-        expiry_height: u64,
-        chain: String,
-        burner_address: String,
-    },
-    TransferKey {
-        tx: String,
-        expiry_height: u64,
-        chain: String,
-    },
-    Token {
-        tx: String,
-        expiry_height: u64,
-        chain: String,
-    },
-}
-
-impl PollCreation {
-    pub fn into_poll(&self, poll_id: u64, tx: String) -> Poll {
-        Poll {
-            poll_id,
-            poll_type: self.into_polltype(tx),
-            votes: vec![],
-            expiry_height: self.expiry_height(),
-        }
-    }
-
-    fn into_polltype(&self, tx: String) -> PollType {
-        match &self {
-            PollCreation::GatewayTx { chain, .. } => PollType::GatewayTx {
-                chain: chain.clone(),
-                tx,
-            },
-            PollCreation::Deposit {
-                chain,
-                burner_address,
-                ..
-            } => PollType::Deposit {
-                chain: chain.clone(),
-                tx,
-                burner_address: burner_address.clone(),
-            },
-            PollCreation::TransferKey { chain, .. } => PollType::TransferKey {
-                chain: chain.clone(),
-                tx,
-            },
-            PollCreation::Token { chain, .. } => PollType::GatewayTx {
-                chain: chain.clone(),
-                tx,
-            },
-        }
-    }
-    pub fn tx(&self) -> &str {
-        match self {
-            PollCreation::GatewayTx { tx, .. } => tx,
-            PollCreation::Deposit { tx, .. } => tx,
-            PollCreation::TransferKey { tx, .. } => tx,
-            PollCreation::Token { tx, .. } => tx,
-        }
-    }
-
-    fn expiry_height(&self) -> u64 {
-        match self {
-            PollCreation::GatewayTx { expiry_height, .. } => *expiry_height,
-            PollCreation::Deposit { expiry_height, .. } => *expiry_height,
-            PollCreation::TransferKey { expiry_height, .. } => *expiry_height,
-            PollCreation::Token { expiry_height, .. } => *expiry_height,
-        }
-    }
+#[derive(Debug, Clone)]
+pub struct PollData {
+    pub kind: PollKind,
+    pub chain: String,
+    pub tx: String,
+    pub expiry_height: u64,
 }
 
 #[derive(Debug)]
 pub struct Poll {
     pub poll_id: u64,
-    pub poll_type: PollType,
+    pub data: PollData,
     pub votes: Vec<PollVote>,
-    pub expiry_height: u64,
 }
 
 #[derive(Deserialize, Debug)]
@@ -161,9 +65,6 @@ struct PollParticipantsJson {
 }
 
 fn extract_poll_mappings_from_json(event: &TendermintEvent) -> Vec<PollEvent> {
-    // TODO: we _could_ track participants (Vec<addr>)
-    // to derive VP & poll completion
-    // for now, we assume that after poll expiry, they all complete
     let mut poll_mappings = Vec::new();
     for attr in &event.attributes {
         let key_decoded = general_purpose::STANDARD.decode(&attr.key).ok();
@@ -178,7 +79,8 @@ fn extract_poll_mappings_from_json(event: &TendermintEvent) -> Vec<PollEvent> {
                         {
                             for mapping in mappings {
                                 if let Ok(poll_id) = mapping.poll_id.parse::<u64>() {
-                                    poll_mappings.push(PollEvent::GatewayTx {
+                                    poll_mappings.push(PollEvent {
+                                        kind: PollKind::GatewayTx,
                                         tx_id: mapping.tx_id,
                                         poll_id,
                                     });
@@ -194,39 +96,13 @@ fn extract_poll_mappings_from_json(event: &TendermintEvent) -> Vec<PollEvent> {
 }
 
 #[derive(Debug)]
-pub struct PollParticipants {
+pub struct PollEvent {
+    pub kind: PollKind,
     pub tx_id: Vec<u8>,
     pub poll_id: u64,
-    // TODO: extract asset from ConfirmDepositStarted event if needed
 }
 
-#[derive(Debug)]
-pub enum PollEvent {
-    GatewayTx { tx_id: Vec<u8>, poll_id: u64 },
-    Deposit { tx_id: Vec<u8>, poll_id: u64 },
-    TransferKey { tx_id: Vec<u8>, poll_id: u64 },
-    Token { tx_id: Vec<u8>, poll_id: u64 },
-}
-impl PollEvent {
-    pub fn tx(&self) -> String {
-        match self {
-            PollEvent::Deposit { tx_id, .. } => hex::encode(tx_id),
-            PollEvent::GatewayTx { tx_id, .. } => hex::encode(tx_id),
-            PollEvent::TransferKey { tx_id, .. } => hex::encode(tx_id),
-            PollEvent::Token { tx_id, .. } => hex::encode(tx_id),
-        }
-    }
-    pub fn poll_id(&self) -> u64 {
-        match self {
-            PollEvent::Deposit { poll_id, .. } => *poll_id,
-            PollEvent::GatewayTx { poll_id, .. } => *poll_id,
-            PollEvent::TransferKey { poll_id, .. } => *poll_id,
-            PollEvent::Token { poll_id, .. } => *poll_id,
-        }
-    }
-}
-
-fn extract_poll_participants_from_event(event: &TendermintEvent) -> Option<PollParticipants> {
+fn extract_poll_event_from_attributes(event: &TendermintEvent, kind: PollKind) -> Option<PollEvent> {
     let mut tx_id: Option<Vec<u8>> = None;
     let mut poll_id: Option<u64> = None;
 
@@ -265,7 +141,7 @@ fn extract_poll_participants_from_event(event: &TendermintEvent) -> Option<PollP
     }
 
     if let (Some(tx_id), Some(poll_id)) = (tx_id, poll_id) {
-        Some(PollParticipants { tx_id, poll_id })
+        Some(PollEvent { kind, tx_id, poll_id })
     } else {
         None
     }
@@ -280,34 +156,16 @@ pub fn extract_all_poll_events(block_results: &BlockResults) -> Vec<PollEvent> {
                 for event in events {
                     let poll_event = match event.r#type.as_str() {
                         "axelar.evm.v1beta1.ConfirmGatewayTxStarted" => {
-                            extract_poll_participants_from_event(event).map(|p| {
-                                PollEvent::GatewayTx {
-                                    tx_id: p.tx_id,
-                                    poll_id: p.poll_id,
-                                }
-                            })
+                            extract_poll_event_from_attributes(event, PollKind::GatewayTx)
                         }
                         "axelar.evm.v1beta1.ConfirmDepositStarted" => {
-                            extract_poll_participants_from_event(event).map(|p| {
-                                PollEvent::Deposit {
-                                    tx_id: p.tx_id,
-                                    poll_id: p.poll_id,
-                                }
-                            })
+                            extract_poll_event_from_attributes(event, PollKind::Deposit { burner_address: String::new() })
                         }
                         "axelar.evm.v1beta1.ConfirmKeyTransferStarted" => {
-                            extract_poll_participants_from_event(event).map(|p| {
-                                PollEvent::TransferKey {
-                                    tx_id: p.tx_id,
-                                    poll_id: p.poll_id,
-                                }
-                            })
+                            extract_poll_event_from_attributes(event, PollKind::TransferKey)
                         }
                         "axelar.evm.v1beta1.ConfirmTokenStarted" => {
-                            extract_poll_participants_from_event(event).map(|p| PollEvent::Token {
-                                tx_id: p.tx_id,
-                                poll_id: p.poll_id,
-                            })
+                            extract_poll_event_from_attributes(event, PollKind::Token)
                         }
                         _ => None,
                     };

@@ -50,20 +50,16 @@ fn test_full_poll_flow_deposit() {
     );
 
     let poll = &state.polls[&2839857];
-    match &poll.poll_type {
-        polls::PollType::Deposit {
-            tx,
-            chain,
-            burner_address,
-        } => {
-            assert_eq!(
-                tx,
-                "4af800f430dc829f3f08dd698dccdb3aac37438288653503bb2710f6cab386ec"
-            );
-            assert_eq!(chain, "Avalanche");
+    assert_eq!(
+        poll.data.tx,
+        "4af800f430dc829f3f08dd698dccdb3aac37438288653503bb2710f6cab386ec"
+    );
+    assert_eq!(poll.data.chain, "Avalanche");
+    match &poll.data.kind {
+        polls::PollKind::Deposit { burner_address } => {
             assert_eq!(burner_address, "64db450dae5f15853b9119918cd7dd7944e67510");
         }
-        _ => panic!("Expected Deposit poll type"),
+        _ => panic!("Expected Deposit poll kind"),
     }
 }
 
@@ -109,28 +105,20 @@ fn test_full_poll_flow_transfer_key() {
     );
 
     let transfer_key_poll = &state.polls[&2843160];
-    match &transfer_key_poll.poll_type {
-        polls::PollType::TransferKey { tx, chain } => {
-            assert_eq!(
-                tx,
-                "78e2698855ffb323320c8d4ae1dc85eb3c8e10b3a75180a7aadb238f769f6e8d"
-            );
-            assert_eq!(chain, "scroll");
-        }
-        _ => panic!("Expected TransferKey poll type"),
-    }
+    assert!(matches!(transfer_key_poll.data.kind, polls::PollKind::TransferKey));
+    assert_eq!(
+        transfer_key_poll.data.tx,
+        "78e2698855ffb323320c8d4ae1dc85eb3c8e10b3a75180a7aadb238f769f6e8d"
+    );
+    assert_eq!(transfer_key_poll.data.chain, "scroll");
 
     let gateway_tx_poll = &state.polls[&2843161];
-    match &gateway_tx_poll.poll_type {
-        polls::PollType::GatewayTx { tx, chain } => {
-            assert_eq!(
-                tx,
-                "05a409afd25c53a59f98a48721a5274a450b4ac5a2007842b4e168a111af806e"
-            );
-            assert_eq!(chain, "scroll");
-        }
-        _ => panic!("Expected GatewayTx poll type"),
-    }
+    assert!(matches!(gateway_tx_poll.data.kind, polls::PollKind::GatewayTx));
+    assert_eq!(
+        gateway_tx_poll.data.tx,
+        "05a409afd25c53a59f98a48721a5274a450b4ac5a2007842b4e168a111af806e"
+    );
+    assert_eq!(gateway_tx_poll.data.chain, "scroll");
 }
 
 #[test]
@@ -169,10 +157,7 @@ fn test_full_poll_flow_gateway_txs_batch() {
     );
 
     let has_binance_poll = state.polls.values().any(|poll| {
-        matches!(
-            &poll.poll_type,
-            polls::PollType::GatewayTx { chain, .. } if chain == "binance"
-        )
+        matches!(poll.data.kind, polls::PollKind::GatewayTx) && poll.data.chain == "binance"
     });
 
     assert!(
@@ -227,16 +212,12 @@ fn test_full_poll_flow_confirm_token() {
     );
 
     let poll = &state.polls[&2803037];
-    match &poll.poll_type {
-        polls::PollType::GatewayTx { tx, chain } => {
-            assert_eq!(
-                tx,
-                "05f9266335faf6ff82f98687f7f19398426faf3b1cca5ef26b235b42baa593e5"
-            );
-            assert_eq!(chain, "Ethereum");
-        }
-        _ => panic!("Expected GatewayTx poll type (Token polls map to GatewayTx)"),
-    }
+    assert!(matches!(poll.data.kind, polls::PollKind::Token));
+    assert_eq!(
+        poll.data.tx,
+        "05f9266335faf6ff82f98687f7f19398426faf3b1cca5ef26b235b42baa593e5"
+    );
+    assert_eq!(poll.data.chain, "Ethereum");
 }
 
 #[test]
@@ -285,16 +266,12 @@ fn test_full_poll_flow_confirm_gateway_tx_started() {
     );
 
     let poll = &state.polls[&2846687];
-    match &poll.poll_type {
-        polls::PollType::GatewayTx { tx, chain } => {
-            assert_eq!(
-                tx,
-                "3016e9691a809ae405ffc764fc9fe09eb09535b1806e688067527a9e38c979a0"
-            );
-            assert_eq!(chain, "blast");
-        }
-        _ => panic!("Expected GatewayTx poll type"),
-    }
+    assert!(matches!(poll.data.kind, polls::PollKind::GatewayTx));
+    assert_eq!(
+        poll.data.tx,
+        "3016e9691a809ae405ffc764fc9fe09eb09535b1806e688067527a9e38c979a0"
+    );
+    assert_eq!(poll.data.chain, "blast");
 }
 
 #[test]

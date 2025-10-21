@@ -11,7 +11,7 @@ use rpc::{get_block, get_block_results, get_chain_list, get_chain_params, get_he
 use blocks::Block;
 use config::ChainParams;
 use log::{debug, error, info, warn};
-use polls::{Poll, PollCreation};
+use polls::{Poll, PollData};
 use std::collections::HashMap;
 use std::sync::mpsc;
 
@@ -72,7 +72,7 @@ pub struct ProcessingState {
     pub last_heartbeat: HashMap<String, u64>,
     pub chain_params: HashMap<String, ChainParams>,
     pub polls: HashMap<u64, Poll>,
-    pub pending_poll_creations: HashMap<u64, Vec<PollCreation>>,
+    pub pending_poll_creations: HashMap<u64, Vec<PollData>>,
     pub chain_tip: u64,
     pub last_processed_height: u64,
     pub broadcaster_stats: HashMap<(String, String), BroadcasterStats>,
@@ -211,7 +211,7 @@ pub fn process_single_message(
                 let expiring_poll_ids: Vec<_> = state
                     .polls
                     .iter()
-                    .filter(|(_, poll)| poll.expiry_height <= height as u64)
+                    .filter(|(_, poll)| poll.data.expiry_height <= height as u64)
                     .map(|(id, _)| *id)
                     .collect();
 
@@ -221,7 +221,7 @@ pub fn process_single_message(
                     }
                 }
 
-                state.polls.retain(|_, v| v.expiry_height > height as u64);
+                state.polls.retain(|_, v| v.data.expiry_height > height as u64);
                 debug!("open polls after pruning {}", state.polls.len());
 
                 match blocks::process_block(&block, &state.chain_params, height) {
@@ -293,20 +293,23 @@ pub fn process_single_message(
                     let poll_events = polls::extract_all_poll_events(&block_results);
                     let tx_to_poll_ids: HashMap<String, u64> = poll_events
                         .iter()
-                        .map(|pe| (pe.tx(), pe.poll_id()))
+                        .map(|pe| (hex::encode(&pe.tx_id), pe.poll_id))
                         .collect();
 
                     for creation in poll_creations {
-                        let tx_id = creation.tx();
-                        if let Some(poll_id) = tx_to_poll_ids.get(tx_id) {
-                            let poll = creation.into_poll(*poll_id, tx_id.into());
+                        if let Some(poll_id) = tx_to_poll_ids.get(&creation.tx) {
+                            let poll = Poll {
+                                poll_id: *poll_id,
+                                data: creation,
+                                votes: vec![],
+                            };
                             info!("Created poll at {height}; poll_id: {poll_id}");
                             debug!("Created poll at {height} = {poll:?}");
                             state.polls.insert(poll.poll_id, poll);
                         } else {
                             warn!(
                                 "Got poll creation for tx_id={} but no matching event",
-                                tx_id
+                                creation.tx
                             );
                         }
                     }
@@ -437,17 +440,18 @@ pub fn process_single_io_command(cmd: IoCommand, rpc_url: &str, lcd_url: &str) -
 mod tests {
     use super::*;
     use crate::config::Broadcaster;
-    use crate::polls::{PollType, PollVote};
+    use crate::polls::{PollData, PollKind, PollVote};
 
     fn create_test_poll(poll_id: u64, votes: Vec<PollVote>) -> Poll {
         Poll {
             poll_id,
-            poll_type: PollType::GatewayTx {
+            data: PollData {
+                kind: PollKind::GatewayTx,
                 chain: "Ethereum".to_string(),
                 tx: "test_tx".to_string(),
+                expiry_height: 1000,
             },
             votes,
-            expiry_height: 1000,
         }
     }
 

@@ -13,7 +13,7 @@ use crate::generated::axelar::evm::v1beta1::{
 use crate::generated::axelar::reward::v1beta1::RefundMsgRequest;
 use crate::generated::axelar::tss::v1beta1::HeartBeatRequest;
 use crate::generated::axelar::vote::v1beta1::VoteRequest;
-use crate::polls::{PollCreation, PollRequest, PollVote};
+use crate::polls::{PollData, PollKind, PollRequest, PollVote};
 
 #[derive(Deserialize, Debug)]
 struct Response {
@@ -268,7 +268,7 @@ pub fn get_txs(block: &Block) -> Result<Vec<TxBody>, Box<dyn std::error::Error>>
 
 pub struct RawBlockData {
     pub heartbeat_addrs: Vec<String>,
-    pub poll_creations: Vec<PollCreation>,
+    pub poll_creations: Vec<PollData>,
     pub votes: Vec<PollVote>,
 }
 
@@ -289,28 +289,34 @@ pub fn process_block(
     let poll_requests: Vec<PollRequest> = raw_reqs
         .iter()
         .map(|r| match r {
-            RawPollRequests::GatewayTx(g) => vec![PollRequest::GatewayTx {
+            RawPollRequests::GatewayTx(g) => vec![PollRequest {
+                kind: PollKind::GatewayTx,
                 tx: hex::encode(&g.tx_id),
                 chain: g.chain.clone(),
             }],
             RawPollRequests::GatewayTxs(g) => g
                 .tx_ids
                 .iter()
-                .map(|tx_id| PollRequest::GatewayTx {
+                .map(|tx_id| PollRequest {
+                    kind: PollKind::GatewayTx,
                     tx: hex::encode(&tx_id),
                     chain: g.chain.clone(),
                 })
                 .collect(),
-            RawPollRequests::Deposit(d) => vec![PollRequest::Deposit {
+            RawPollRequests::Deposit(d) => vec![PollRequest {
+                kind: PollKind::Deposit {
+                    burner_address: hex::encode(&d.burner_address),
+                },
                 tx: hex::encode(&d.tx_id),
                 chain: d.chain.clone(),
-                burner_address: hex::encode(&d.burner_address),
             }],
-            RawPollRequests::TransferKey(t) => vec![PollRequest::TransferKey {
+            RawPollRequests::TransferKey(t) => vec![PollRequest {
+                kind: PollKind::TransferKey,
                 tx: hex::encode(&t.tx_id),
                 chain: t.chain.clone(),
             }],
-            RawPollRequests::Token(t) => vec![PollRequest::Token {
+            RawPollRequests::Token(t) => vec![PollRequest {
+                kind: PollKind::Token,
                 tx: hex::encode(&t.tx_id),
                 chain: t.chain.clone(),
             }],
@@ -320,39 +326,10 @@ pub fn process_block(
 
     let mut poll_creations = Vec::new();
     for request in poll_requests {
-        let chain = request.chain();
-        if let Some(params) = chain_params.get(&chain.to_lowercase()) {
+        if let Some(params) = chain_params.get(&request.chain.to_lowercase()) {
             let revote_period = params.revote_locking_period as u64;
             let expiry_height = height + revote_period;
-
-            let pc = match request {
-                PollRequest::GatewayTx { chain, tx } => PollCreation::GatewayTx {
-                    tx,
-                    chain,
-                    expiry_height,
-                },
-                PollRequest::Deposit {
-                    chain,
-                    tx,
-                    burner_address,
-                } => PollCreation::Deposit {
-                    tx,
-                    chain,
-                    burner_address,
-                    expiry_height,
-                },
-                PollRequest::TransferKey { chain, tx } => PollCreation::TransferKey {
-                    tx,
-                    chain,
-                    expiry_height,
-                },
-                PollRequest::Token { chain, tx } => PollCreation::Token {
-                    tx,
-                    chain,
-                    expiry_height,
-                },
-            };
-            poll_creations.push(pc);
+            poll_creations.push(request.with_expiry(expiry_height));
         }
     }
 
@@ -423,22 +400,19 @@ mod tests {
 
         assert_eq!(result.poll_creations.len(), 1);
 
-        match &result.poll_creations[0] {
-            crate::polls::PollCreation::Deposit {
-                tx,
-                chain,
-                burner_address,
-                expiry_height,
-            } => {
-                assert_eq!(
-                    tx,
-                    "4af800f430dc829f3f08dd698dccdb3aac37438288653503bb2710f6cab386ec"
-                );
-                assert_eq!(chain, "Avalanche");
+        let poll_data = &result.poll_creations[0];
+        assert_eq!(
+            poll_data.tx,
+            "4af800f430dc829f3f08dd698dccdb3aac37438288653503bb2710f6cab386ec"
+        );
+        assert_eq!(poll_data.chain, "Avalanche");
+        assert_eq!(poll_data.expiry_height, 20383480 + 15);
+
+        match &poll_data.kind {
+            crate::polls::PollKind::Deposit { burner_address } => {
                 assert_eq!(burner_address, "64db450dae5f15853b9119918cd7dd7944e67510");
-                assert_eq!(*expiry_height, 20383480 + 15);
             }
-            _ => panic!("Expected Deposit poll creation"),
+            _ => panic!("Expected Deposit poll kind"),
         }
     }
 
@@ -455,46 +429,28 @@ mod tests {
         let transfer_key = result
             .poll_creations
             .iter()
-            .find(|pc| matches!(pc, crate::polls::PollCreation::TransferKey { .. }))
+            .find(|pc| matches!(pc.kind, crate::polls::PollKind::TransferKey))
             .expect("Should have TransferKey poll creation");
 
-        match transfer_key {
-            crate::polls::PollCreation::TransferKey {
-                tx,
-                chain,
-                expiry_height,
-            } => {
-                assert_eq!(
-                    tx,
-                    "78e2698855ffb323320c8d4ae1dc85eb3c8e10b3a75180a7aadb238f769f6e8d"
-                );
-                assert_eq!(chain, "scroll");
-                assert_eq!(*expiry_height, 20404088 + 15);
-            }
-            _ => panic!("Expected TransferKey poll creation"),
-        }
+        assert_eq!(
+            transfer_key.tx,
+            "78e2698855ffb323320c8d4ae1dc85eb3c8e10b3a75180a7aadb238f769f6e8d"
+        );
+        assert_eq!(transfer_key.chain, "scroll");
+        assert_eq!(transfer_key.expiry_height, 20404088 + 15);
 
         let gateway_tx = result
             .poll_creations
             .iter()
-            .find(|pc| matches!(pc, crate::polls::PollCreation::GatewayTx { .. }))
+            .find(|pc| matches!(pc.kind, crate::polls::PollKind::GatewayTx))
             .expect("Should have GatewayTx poll creation");
 
-        match gateway_tx {
-            crate::polls::PollCreation::GatewayTx {
-                tx,
-                chain,
-                expiry_height,
-            } => {
-                assert_eq!(
-                    tx,
-                    "05a409afd25c53a59f98a48721a5274a450b4ac5a2007842b4e168a111af806e"
-                );
-                assert_eq!(chain, "scroll");
-                assert_eq!(*expiry_height, 20404088 + 15);
-            }
-            _ => panic!("Expected GatewayTx poll creation"),
-        }
+        assert_eq!(
+            gateway_tx.tx,
+            "05a409afd25c53a59f98a48721a5274a450b4ac5a2007842b4e168a111af806e"
+        );
+        assert_eq!(gateway_tx.chain, "scroll");
+        assert_eq!(gateway_tx.expiry_height, 20404088 + 15);
     }
 
     #[test]
@@ -511,11 +467,7 @@ mod tests {
         );
 
         let has_binance_tx = result.poll_creations.iter().any(|pc| {
-            if let crate::polls::PollCreation::GatewayTx { chain, .. } = pc {
-                chain == "binance"
-            } else {
-                false
-            }
+            matches!(pc.kind, crate::polls::PollKind::GatewayTx) && pc.chain == "binance"
         });
 
         assert!(
@@ -534,21 +486,14 @@ mod tests {
 
         assert_eq!(result.poll_creations.len(), 1);
 
-        match &result.poll_creations[0] {
-            crate::polls::PollCreation::Token {
-                tx,
-                chain,
-                expiry_height,
-            } => {
-                assert_eq!(
-                    tx,
-                    "05f9266335faf6ff82f98687f7f19398426faf3b1cca5ef26b235b42baa593e5"
-                );
-                assert_eq!(chain, "Ethereum");
-                assert_eq!(*expiry_height, 20133866 + 15);
-            }
-            _ => panic!("Expected Token poll creation"),
-        }
+        let poll_data = &result.poll_creations[0];
+        assert!(matches!(poll_data.kind, crate::polls::PollKind::Token));
+        assert_eq!(
+            poll_data.tx,
+            "05f9266335faf6ff82f98687f7f19398426faf3b1cca5ef26b235b42baa593e5"
+        );
+        assert_eq!(poll_data.chain, "Ethereum");
+        assert_eq!(poll_data.expiry_height, 20133866 + 15);
     }
 
     #[test]
