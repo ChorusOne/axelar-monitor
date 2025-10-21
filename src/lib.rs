@@ -23,7 +23,7 @@ pub enum Height {
 
 pub enum IoCommand {
     FetchBlock(Height),
-    FetchBlockResults(u64),
+    FetchBlockResults(u64, Vec<PollData>),
     FetchChainList,
     FetchChainParams(String),
     FetchHead,
@@ -33,7 +33,7 @@ pub enum IoCommand {
 
 pub enum IoResult {
     Block(u64, Block),
-    BlockResults(u64, rpc::BlockResults),
+    BlockResults(u64, rpc::BlockResults, Vec<PollData>),
     FetchError(Height, String),
     ChainList(Vec<String>),
     ChainParams(config::ChainParams),
@@ -72,7 +72,6 @@ pub struct ProcessingState {
     pub last_heartbeat: HashMap<String, u64>,
     pub chain_params: HashMap<String, ChainParams>,
     pub polls: HashMap<u64, Poll>,
-    pub pending_poll_creations: HashMap<u64, Vec<PollData>>,
     pub chain_tip: u64,
     pub last_processed_height: u64,
     pub broadcaster_stats: HashMap<(String, String), BroadcasterStats>,
@@ -112,7 +111,6 @@ impl ProcessingState {
             last_heartbeat,
             chain_params,
             polls: HashMap::new(),
-            pending_poll_creations: HashMap::new(),
             chain_tip: 0,
             last_processed_height: 0,
             broadcaster_stats,
@@ -221,7 +219,9 @@ pub fn process_single_message(
                     }
                 }
 
-                state.polls.retain(|_, v| v.data.expiry_height > height as u64);
+                state
+                    .polls
+                    .retain(|_, v| v.data.expiry_height > height as u64);
                 debug!("open polls after pruning {}", state.polls.len());
 
                 match blocks::process_block(&block, &state.chain_params, height) {
@@ -243,11 +243,8 @@ pub fn process_single_message(
                                 data.poll_creations.len(),
                                 height
                             );
-                            state
-                                .pending_poll_creations
-                                .insert(height, data.poll_creations);
                             responses.push(ProcessingResponse::SendIoCommand(
-                                IoCommand::FetchBlockResults(height),
+                                IoCommand::FetchBlockResults(height, data.poll_creations),
                             ));
                         }
 
@@ -282,42 +279,35 @@ pub fn process_single_message(
                     }
                 }
             }
-            IoResult::BlockResults(height, block_results) => {
-                if let Some(poll_creations) = state.pending_poll_creations.remove(&height) {
-                    debug!(
-                        "Processing {} poll_creations with block_results for height {}",
-                        poll_creations.len(),
-                        height
-                    );
+            IoResult::BlockResults(height, block_results, poll_creations) => {
+                debug!(
+                    "Processing {} poll_creations with block_results for height {}",
+                    poll_creations.len(),
+                    height
+                );
 
-                    let poll_events = polls::extract_all_poll_events(&block_results);
-                    let tx_to_poll_ids: HashMap<String, u64> = poll_events
-                        .iter()
-                        .map(|pe| (hex::encode(&pe.tx_id), pe.poll_id))
-                        .collect();
+                let poll_events = polls::extract_all_poll_events(&block_results);
+                let tx_to_poll_ids: HashMap<String, u64> = poll_events
+                    .iter()
+                    .map(|pe| (hex::encode(&pe.tx_id), pe.poll_id))
+                    .collect();
 
-                    for creation in poll_creations {
-                        if let Some(poll_id) = tx_to_poll_ids.get(&creation.tx) {
-                            let poll = Poll {
-                                poll_id: *poll_id,
-                                data: creation,
-                                votes: vec![],
-                            };
-                            info!("Created poll at {height}; poll_id: {poll_id}");
-                            debug!("Created poll at {height} = {poll:?}");
-                            state.polls.insert(poll.poll_id, poll);
-                        } else {
-                            warn!(
-                                "Got poll creation for tx_id={} but no matching event",
-                                creation.tx
-                            );
-                        }
+                for creation in poll_creations {
+                    if let Some(poll_id) = tx_to_poll_ids.get(&creation.tx) {
+                        let poll = Poll {
+                            poll_id: *poll_id,
+                            data: creation,
+                            votes: vec![],
+                        };
+                        info!("Created poll at {height}; poll_id: {poll_id}");
+                        debug!("Created poll at {height} = {poll:?}");
+                        state.polls.insert(poll.poll_id, poll);
+                    } else {
+                        warn!(
+                            "Got poll creation for tx_id={} but no matching event",
+                            creation.tx
+                        );
                     }
-                } else {
-                    debug!(
-                        "Received block_results for height {} but no pending poll creations",
-                        height
-                    );
                 }
                 vec![]
             }
@@ -393,9 +383,9 @@ pub fn process_single_io_command(cmd: IoCommand, rpc_url: &str, lcd_url: &str) -
                 IoResult::FetchError(height, e.to_string()),
             ))],
         },
-        IoCommand::FetchBlockResults(height) => match get_block_results(lcd_url, height) {
+        IoCommand::FetchBlockResults(height, pc) => match get_block_results(lcd_url, height) {
             Ok(block_results) => vec![IoResponse::SendMessage(ProcessingMessage::IoResult(
-                IoResult::BlockResults(height, block_results),
+                IoResult::BlockResults(height, block_results, pc),
             ))],
             Err(e) => {
                 error!("Failed to fetch block results for height {}: {}", height, e);

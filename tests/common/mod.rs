@@ -21,10 +21,10 @@ pub fn mock_process_io_command(cmd: IoCommand, test_type: &str, _height: u64) ->
                 axelar_watch::IoResult::Block(h, block),
             ))]
         }
-        IoCommand::FetchBlockResults(h) => {
+        IoCommand::FetchBlockResults(h, poll_data) => {
             let block_results = load_test_block_results_from_json(test_type, h);
             vec![IoResponse::SendMessage(ProcessingMessage::IoResult(
-                axelar_watch::IoResult::BlockResults(h, block_results),
+                axelar_watch::IoResult::BlockResults(h, block_results, poll_data),
             ))]
         }
         _ => vec![],

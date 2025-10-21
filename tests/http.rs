@@ -138,7 +138,7 @@ fn test_with_http_server() {
                 assert!(
                     proc_responses.iter().any(|r| matches!(
                         r,
-                        ProcessingResponse::SendIoCommand(IoCommand::FetchBlockResults(_))
+                        ProcessingResponse::SendIoCommand(IoCommand::FetchBlockResults(..))
                     )),
                     "Should request BlockResults"
                 );

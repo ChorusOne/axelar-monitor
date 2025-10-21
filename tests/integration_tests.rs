@@ -24,7 +24,7 @@ fn test_full_poll_flow_deposit() {
             assert!(
                 proc_responses.iter().any(|r| matches!(
                     r,
-                    ProcessingResponse::SendIoCommand(IoCommand::FetchBlockResults(_))
+                    ProcessingResponse::SendIoCommand(IoCommand::FetchBlockResults(..))
                 )),
                 "Should request BlockResults"
             );
@@ -185,7 +185,7 @@ fn test_full_poll_flow_confirm_token() {
             assert!(
                 proc_responses.iter().any(|r| matches!(
                     r,
-                    ProcessingResponse::SendIoCommand(IoCommand::FetchBlockResults(_))
+                    ProcessingResponse::SendIoCommand(IoCommand::FetchBlockResults(..))
                 )),
                 "Should request BlockResults"
             );
@@ -239,7 +239,7 @@ fn test_full_poll_flow_confirm_gateway_tx_started() {
             assert!(
                 proc_responses.iter().any(|r| matches!(
                     r,
-                    ProcessingResponse::SendIoCommand(IoCommand::FetchBlockResults(_))
+                    ProcessingResponse::SendIoCommand(IoCommand::FetchBlockResults(..))
                 )),
                 "Should request BlockResults"
             );
