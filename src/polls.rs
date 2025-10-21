@@ -64,29 +64,34 @@ struct PollParticipantsJson {
     // Ignore participants field - we don't need it
 }
 
+fn decode_attribute_key(attr: &crate::rpc::EventAttribute) -> Option<String> {
+    let key_bytes = general_purpose::STANDARD.decode(&attr.key).ok()?;
+    String::from_utf8(key_bytes).ok()
+}
+
+fn decode_attribute_value<T: serde::de::DeserializeOwned>(
+    attr: &crate::rpc::EventAttribute,
+) -> Option<T> {
+    let value = attr.value.as_ref()?;
+    let value_bytes = general_purpose::STANDARD.decode(value).ok()?;
+    let value_str = String::from_utf8(value_bytes).ok()?;
+    serde_json::from_str(&value_str).ok()
+}
+
 fn extract_poll_mappings_from_json(event: &TendermintEvent) -> Vec<PollEvent> {
     let mut poll_mappings = Vec::new();
     for attr in &event.attributes {
-        let key_decoded = general_purpose::STANDARD.decode(&attr.key).ok();
-        if let Some(key_bytes) = key_decoded
-            && key_bytes == b"poll_mappings"
+        if let Some(key) = decode_attribute_key(attr)
+            && key == "poll_mappings"
         {
-            if let Some(value) = &attr.value {
-                if let Ok(value_bytes) = general_purpose::STANDARD.decode(value) {
-                    if let Ok(value_str) = String::from_utf8(value_bytes) {
-                        if let Ok(mappings) =
-                            serde_json::from_str::<Vec<PollMappingJson>>(&value_str)
-                        {
-                            for mapping in mappings {
-                                if let Ok(poll_id) = mapping.poll_id.parse::<u64>() {
-                                    poll_mappings.push(PollEvent {
-                                        kind: PollKind::GatewayTx,
-                                        tx_id: mapping.tx_id,
-                                        poll_id,
-                                    });
-                                }
-                            }
-                        }
+            if let Some(mappings) = decode_attribute_value::<Vec<PollMappingJson>>(attr) {
+                for mapping in mappings {
+                    if let Ok(poll_id) = mapping.poll_id.parse::<u64>() {
+                        poll_mappings.push(PollEvent {
+                            kind: PollKind::GatewayTx,
+                            tx_id: mapping.tx_id,
+                            poll_id,
+                        });
                     }
                 }
             }
@@ -102,46 +107,35 @@ pub struct PollEvent {
     pub poll_id: u64,
 }
 
-fn extract_poll_event_from_attributes(event: &TendermintEvent, kind: PollKind) -> Option<PollEvent> {
+fn extract_poll_event_from_attributes(
+    event: &TendermintEvent,
+    kind: PollKind,
+) -> Option<PollEvent> {
     let mut tx_id: Option<Vec<u8>> = None;
     let mut poll_id: Option<u64> = None;
 
     for attr in &event.attributes {
-        if let Ok(key_bytes) = general_purpose::STANDARD.decode(&attr.key) {
-            if let Ok(key_str) = String::from_utf8(key_bytes) {
-                match key_str.as_str() {
-                    "tx_id" => {
-                        if let Some(value) = &attr.value {
-                            if let Ok(value_bytes) = general_purpose::STANDARD.decode(value) {
-                                if let Ok(value_str) = String::from_utf8(value_bytes) {
-                                    if let Ok(json) = serde_json::from_str::<Vec<u8>>(&value_str) {
-                                        tx_id = Some(json);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    "participants" => {
-                        if let Some(value) = &attr.value {
-                            if let Ok(value_bytes) = general_purpose::STANDARD.decode(value) {
-                                if let Ok(value_str) = String::from_utf8(value_bytes) {
-                                    if let Ok(json) =
-                                        serde_json::from_str::<PollParticipantsJson>(&value_str)
-                                    {
-                                        poll_id = json.poll_id.parse::<u64>().ok();
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
+        if let Some(key) = decode_attribute_key(attr) {
+            match key.as_str() {
+                "tx_id" => {
+                    tx_id = decode_attribute_value::<Vec<u8>>(attr);
                 }
+                "participants" => {
+                    if let Some(json) = decode_attribute_value::<PollParticipantsJson>(attr) {
+                        poll_id = json.poll_id.parse::<u64>().ok();
+                    }
+                }
+                _ => {}
             }
         }
     }
 
     if let (Some(tx_id), Some(poll_id)) = (tx_id, poll_id) {
-        Some(PollEvent { kind, tx_id, poll_id })
+        Some(PollEvent {
+            kind,
+            tx_id,
+            poll_id,
+        })
     } else {
         None
     }
@@ -159,7 +153,12 @@ pub fn extract_all_poll_events(block_results: &BlockResults) -> Vec<PollEvent> {
                             extract_poll_event_from_attributes(event, PollKind::GatewayTx)
                         }
                         "axelar.evm.v1beta1.ConfirmDepositStarted" => {
-                            extract_poll_event_from_attributes(event, PollKind::Deposit { burner_address: String::new() })
+                            extract_poll_event_from_attributes(
+                                event,
+                                PollKind::Deposit {
+                                    burner_address: String::new(),
+                                },
+                            )
                         }
                         "axelar.evm.v1beta1.ConfirmKeyTransferStarted" => {
                             extract_poll_event_from_attributes(event, PollKind::TransferKey)
