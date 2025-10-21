@@ -1,7 +1,7 @@
 use crate::ProcessingMessage;
 use std::{sync::mpsc, time::Duration};
 
-pub fn metrics_server_loop(msg_tx: mpsc::Sender<ProcessingMessage>, port: u16) {
+pub fn metrics_server_loop(msg_tx: mpsc::Sender<ProcessingMessage>, port: u16, namespace: String) {
     let addr = format!("0.0.0.0:{}", port);
     let server = tiny_http::Server::http(&addr).unwrap();
     println!("Metrics server listening on {}", addr);
@@ -22,28 +22,28 @@ pub fn metrics_server_loop(msg_tx: mpsc::Sender<ProcessingMessage>, port: u16) {
             if let Ok(snapshot) = response_rx.recv_timeout(Duration::from_secs(1)) {
                 let mut metrics = String::new();
 
-                metrics.push_str("# HELP heartbeat_last_height Last height at which broadcaster sent heartbeat\n");
-                metrics.push_str("# TYPE heartbeat_last_height gauge\n");
+                metrics.push_str(&format!("# HELP {}_heartbeat_last_height Last height at which broadcaster sent heartbeat\n", namespace));
+                metrics.push_str(&format!("# TYPE {}_heartbeat_last_height gauge\n", namespace));
                 for (name, height) in &snapshot.last_heartbeat {
                     metrics.push_str(&format!(
-                        "heartbeat_last_height{{broadcaster=\"{}\"}} {}\n",
-                        name, height
+                        "{}_heartbeat_last_height{{broadcaster=\"{}\"}} {}\n",
+                        namespace, name, height
                     ));
                 }
 
-                metrics.push_str("# HELP chain_height Current chain height\n");
-                metrics.push_str("# TYPE chain_height gauge\n");
-                metrics.push_str(&format!("chain_height {}\n", snapshot.chain_height));
+                metrics.push_str(&format!("# HELP {}_chain_height Current chain height\n", namespace));
+                metrics.push_str(&format!("# TYPE {}_chain_height gauge\n", namespace));
+                metrics.push_str(&format!("{}_chain_height {}\n", namespace, snapshot.chain_height));
 
-                metrics.push_str("# HELP last_processed_height Last block height that was processed\n");
-                metrics.push_str("# TYPE last_processed_height gauge\n");
-                metrics.push_str(&format!("last_processed_height {}\n", snapshot.last_processed_height));
+                metrics.push_str(&format!("# HELP {}_last_processed_height Last block height that was processed\n", namespace));
+                metrics.push_str(&format!("# TYPE {}_last_processed_height gauge\n", namespace));
+                metrics.push_str(&format!("{}_last_processed_height {}\n", namespace, snapshot.last_processed_height));
 
-                metrics.push_str("# HELP fetch_errors_total Total number of fetch errors\n");
-                metrics.push_str("# TYPE fetch_errors_total counter\n");
+                metrics.push_str(&format!("# HELP {}_fetch_errors_total Total number of fetch errors\n", namespace));
+                metrics.push_str(&format!("# TYPE {}_fetch_errors_total counter\n", namespace));
                 metrics.push_str(&format!(
-                    "fetch_errors_total {}\n",
-                    snapshot.fetch_error_count
+                    "{}_fetch_errors_total {}\n",
+                    namespace, snapshot.fetch_error_count
                 ));
 
                 let mut sorted_stats: Vec<_> = snapshot.broadcaster_stats.iter().collect();
@@ -53,21 +53,21 @@ pub fn metrics_server_loop(msg_tx: mpsc::Sender<ProcessingMessage>, port: u16) {
                     chain_a.cmp(chain_b).then_with(|| broadcaster_a.cmp(broadcaster_b))
                 });
 
-                metrics.push_str("# HELP broadcaster_votes_total Total number of votes cast by broadcaster on a chain\n");
-                metrics.push_str("# TYPE broadcaster_votes_total counter\n");
+                metrics.push_str(&format!("# HELP {}_broadcaster_votes_total Total number of votes cast by broadcaster on a chain\n", namespace));
+                metrics.push_str(&format!("# TYPE {}_broadcaster_votes_total counter\n", namespace));
                 for ((broadcaster, chain), stats) in &sorted_stats {
                     metrics.push_str(&format!(
-                        "broadcaster_votes_total{{chain=\"{}\",broadcaster=\"{}\"}} {}\n",
-                        chain, broadcaster, stats.total_votes
+                        "{}_broadcaster_votes_total{{chain=\"{}\",broadcaster=\"{}\"}} {}\n",
+                        namespace, chain, broadcaster, stats.total_votes
                     ));
                 }
 
-                metrics.push_str("# HELP broadcaster_votes_disagreed Total number of votes where broadcaster disagreed with majority\n");
-                metrics.push_str("# TYPE broadcaster_votes_disagreed counter\n");
+                metrics.push_str(&format!("# HELP {}_broadcaster_votes_disagreed Total number of votes where broadcaster disagreed with majority\n", namespace));
+                metrics.push_str(&format!("# TYPE {}_broadcaster_votes_disagreed counter\n", namespace));
                 for ((broadcaster, chain), stats) in &sorted_stats {
                     metrics.push_str(&format!(
-                        "broadcaster_votes_disagreed{{chain=\"{}\",broadcaster=\"{}\"}} {}\n",
-                        chain, broadcaster, stats.disagreed_with_majority
+                        "{}_broadcaster_votes_disagreed{{chain=\"{}\",broadcaster=\"{}\"}} {}\n",
+                        namespace, chain, broadcaster, stats.disagreed_with_majority
                     ));
                 }
 

@@ -452,6 +452,7 @@ mod tests {
             lcd_url: "".to_string(),
             poll_interval_seconds: 5,
             metrics_port: 9090,
+            metrics_namespace: "axelar_monitor".to_string(),
             broadcaster: vec![],
             chain_params: vec![],
         };
@@ -471,6 +472,7 @@ mod tests {
             lcd_url: "".to_string(),
             poll_interval_seconds: 5,
             metrics_port: 9090,
+            metrics_namespace: "axelar_monitor".to_string(),
             broadcaster: vec![
                 Broadcaster {
                     name: "broadcaster1".to_string(),
@@ -522,6 +524,7 @@ mod tests {
             lcd_url: "".to_string(),
             poll_interval_seconds: 5,
             metrics_port: 9090,
+            metrics_namespace: "axelar_monitor".to_string(),
             broadcaster: vec![
                 Broadcaster {
                     name: "good_broadcaster".to_string(),
@@ -580,6 +583,7 @@ mod tests {
             lcd_url: "".to_string(),
             poll_interval_seconds: 5,
             metrics_port: 9090,
+            metrics_namespace: "axelar_monitor".to_string(),
             broadcaster: vec![
                 Broadcaster {
                     name: "correct_broadcaster".to_string(),
@@ -638,6 +642,7 @@ mod tests {
             lcd_url: "".to_string(),
             poll_interval_seconds: 5,
             metrics_port: 9090,
+            metrics_namespace: "axelar_monitor".to_string(),
             broadcaster: vec![Broadcaster {
                 name: "known_broadcaster".to_string(),
                 address: "known_addr".to_string(),

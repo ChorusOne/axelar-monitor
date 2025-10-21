@@ -41,6 +41,7 @@ pub fn create_test_config_with_broadcasters(broadcasters: Vec<config::Broadcaste
         lcd_url: "http://test".to_string(),
         poll_interval_seconds: 6,
         metrics_port: 9090,
+        metrics_namespace: "axelar_monitor".to_string(),
         broadcaster: broadcasters,
         chain_params: vec![
             config::ChainParams {

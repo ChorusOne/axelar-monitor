@@ -14,8 +14,14 @@ pub struct Config {
     pub lcd_url: String,
     pub poll_interval_seconds: u64,
     pub metrics_port: u16,
+    #[serde(default = "default_metrics_namespace")]
+    pub metrics_namespace: String,
     pub broadcaster: Vec<Broadcaster>,
     pub chain_params: Vec<ChainParams>,
+}
+
+fn default_metrics_namespace() -> String {
+    "axelar_monitor".to_string()
 }
 
 #[derive(Deserialize, Debug)]
