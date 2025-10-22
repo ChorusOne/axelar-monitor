@@ -1,4 +1,4 @@
-use axelar_watch::{Config, Height, IoCommand, IoResponse, ProcessingMessage, blocks, config, rpc};
+use axelar_monitor::{Config, Height, IoCommand, IoResponse, ProcessingMessage, blocks, config, rpc};
 
 pub fn load_test_block_from_json(test_type: &str, height: u64) -> blocks::Block {
     let path = format!("test_data/{}/block_{}.json", test_type, height);
@@ -18,13 +18,13 @@ pub fn mock_process_io_command(cmd: IoCommand, test_type: &str, _height: u64) ->
         IoCommand::FetchBlock(Height::Specific(h)) => {
             let block = load_test_block_from_json(test_type, h);
             vec![IoResponse::SendMessage(ProcessingMessage::IoResult(
-                axelar_watch::IoResult::Block(h, block),
+                axelar_monitor::IoResult::Block(h, block),
             ))]
         }
         IoCommand::FetchBlockResults(h, poll_data) => {
             let block_results = load_test_block_results_from_json(test_type, h);
             vec![IoResponse::SendMessage(ProcessingMessage::IoResult(
-                axelar_watch::IoResult::BlockResults(h, block_results, poll_data),
+                axelar_monitor::IoResult::BlockResults(h, block_results, poll_data),
             ))]
         }
         _ => vec![],

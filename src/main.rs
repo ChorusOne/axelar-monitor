@@ -1,4 +1,4 @@
-use axelar_watch::{
+use axelar_monitor::{
     Config, Height, IoCommand, IoResponse, ProcessingMessage, ProcessingResponse, ProcessingState,
     process_single_message, process_single_io_command,
 };

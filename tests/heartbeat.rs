@@ -1,6 +1,6 @@
 pub mod common;
 
-use axelar_watch::{
+use axelar_monitor::{
     Height, IoCommand, IoResponse, ProcessingResponse, ProcessingState, config,
     process_single_message,
 };
