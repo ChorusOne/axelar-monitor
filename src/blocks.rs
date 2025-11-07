@@ -1,11 +1,12 @@
 use base64::{Engine as _, engine::general_purpose};
 use cosmos_sdk_proto::cosmos::tx::v1beta1::{Tx, TxBody};
+use log::info;
 use prost::Message;
 use serde::Deserialize;
 use std::collections::HashMap;
 
 use crate::config::ChainParams;
-use crate::generated::axelar::evm::v1beta1::event::Event;
+use crate::generated::axelar::evm::v1beta1::event::{self, Event};
 use crate::generated::axelar::evm::v1beta1::{
     ConfirmDepositRequest, ConfirmGatewayTxRequest, ConfirmGatewayTxsRequest, ConfirmTokenRequest,
     ConfirmTransferKeyRequest, VoteEvents,
@@ -187,6 +188,19 @@ fn extract_heartbeat_request(refund_msg: &cosmos_sdk_proto::Any) -> Option<Heart
     HeartBeatRequest::decode(&inner.value[..]).ok()
 }
 
+fn event_name(evt: &Option<event::Event>) -> &str {
+    match evt {
+        Some(Event::ContractCall(_)) => "ContractCall",
+        Some(Event::ContractCallWithToken(_)) => "ContractCallWithToken",
+        Some(Event::MultisigOperatorshipTransferred(_)) => "MultisigOperatorshipTransferred",
+        Some(Event::MultisigOwnershipTransferred(_)) => "MultisigOwnershipTransferred",
+        Some(Event::Transfer(_)) => "Transfer",
+        Some(Event::TokenSent(_)) => "TokenSent",
+        Some(Event::TokenDeployed(_)) => "TokenDeployed",
+        None => "None",
+    }
+}
+
 pub fn get_votes_from_txs(txs: &[TxBody]) -> Vec<PollVote> {
     let mut ret: Vec<_> = vec![];
     for vote in extract_decoded_votes(&txs) {
@@ -215,11 +229,23 @@ pub fn get_votes_from_txs(txs: &[TxBody]) -> Vec<PollVote> {
                                 Some(hex::encode(&c.payload_hash))
                             }
                             Some(Event::MultisigOperatorshipTransferred(_)) => None,
+                            Some(Event::MultisigOwnershipTransferred(_)) => None,
                             Some(Event::Transfer(_)) => None,
-                            Some(u) => panic!("Unsupported event {u:?}"),
+                            Some(Event::TokenSent(_)) => None,
+                            Some(Event::TokenDeployed(_)) => None,
                             None => None,
                         },
                     };
+
+                    if v.payload_hash.is_none() {
+                        info!(
+                            "On poll {}, sender {}, hash for {} is None",
+                            vote.poll_id,
+                            &sender_id,
+                            event_name(&event.event),
+                        );
+                    }
+
                     ret.push(v);
                 }
             }
