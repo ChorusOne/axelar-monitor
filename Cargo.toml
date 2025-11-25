@@ -2,6 +2,7 @@
 name = "axelar-monitor"
 version = "0.1.0"
 edition = "2024"
+license-file = "LICENSE"
 
 [dependencies]
 base64 = "0.22.1"
