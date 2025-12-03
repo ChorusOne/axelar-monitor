@@ -223,7 +223,7 @@ pub fn process_single_message(
             IoResult::Block(height, block) => {
                 state.chain_height = std::cmp::max(state.chain_height, height);
                 state.last_processed_height = height;
-                debug!(
+                info!(
                     "got block height is {}, chain height is {}",
                     height, state.chain_height
                 );
@@ -244,7 +244,7 @@ pub fn process_single_message(
                 state
                     .polls
                     .retain(|_, v| v.data.expiry_height > height as u64);
-                debug!("open polls after pruning {}", state.polls.len());
+                info!("open polls after pruning {}", state.polls.len());
 
                 match blocks::process_block(&block, &state.chain_params, height) {
                     Ok(data) => {
@@ -260,7 +260,7 @@ pub fn process_single_message(
 
                         let mut responses = Vec::new();
                         if !data.poll_creations.is_empty() {
-                            debug!(
+                            info!(
                                 "Storing {} poll_creations for height {}, fetching block_results",
                                 data.poll_creations.len(),
                                 height
@@ -284,7 +284,7 @@ pub fn process_single_message(
 
                         if state.chain_tip > state.last_processed_height {
                             let next_height = state.last_processed_height + 1;
-                            debug!(
+                            info!(
                                 "Still behind chain tip, immediately fetching block {}",
                                 next_height
                             );
@@ -374,7 +374,7 @@ pub fn process_single_message(
                         Height::Specific(next_height),
                     ))]
                 } else {
-                    debug!("Chain tip updated to {}", height);
+                    info!("Chain tip updated to {}", height);
                     vec![]
                 }
             }
@@ -755,15 +755,15 @@ mod tests {
         assert_eq!(stats.get(&active_key).unwrap().missed_votes, 0);
 
         assert_eq!(stats.get(&inactive_key).unwrap().total_votes, 0);
-        assert_eq!(
-            stats.get(&inactive_key).unwrap().disagreed_with_majority,
-            0
-        );
+        assert_eq!(stats.get(&inactive_key).unwrap().disagreed_with_majority, 0);
         assert_eq!(stats.get(&inactive_key).unwrap().missed_votes, 1);
 
         assert_eq!(stats.get(&another_inactive_key).unwrap().total_votes, 0);
         assert_eq!(
-            stats.get(&another_inactive_key).unwrap().disagreed_with_majority,
+            stats
+                .get(&another_inactive_key)
+                .unwrap()
+                .disagreed_with_majority,
             0
         );
         assert_eq!(stats.get(&another_inactive_key).unwrap().missed_votes, 1);
