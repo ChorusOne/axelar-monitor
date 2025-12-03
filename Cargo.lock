@@ -9,6 +9,34 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "aetos"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b22ca5e51eb89a6b17fb7e3d92e725606d9205dcad1f8f158de0b501899e1315"
+dependencies = [
+ "aetos-core",
+ "aetos-macro",
+]
+
+[[package]]
+name = "aetos-core"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00fe5d766f19d91ff725ee564fdcdc8b016b288abcbd4e41ea6d57316a05418c"
+
+[[package]]
+name = "aetos-macro"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fa6d433825c355156dd64d2a812d5e1fb9ead9883fae1a5eb4af78336ec89eb2"
+dependencies = [
+ "aetos-core",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -33,6 +61,7 @@ checksum = "d92bec98840b8f03a5ff5413de5293bfcd8bf96467cf5452609f939ec6f5de16"
 name = "axelar-monitor"
 version = "0.1.0"
 dependencies = [
+ "aetos",
  "base64",
  "cosmos-sdk-proto",
  "hex",

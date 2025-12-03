@@ -105,7 +105,10 @@ fn test_full_poll_flow_transfer_key() {
     );
 
     let transfer_key_poll = &state.polls[&2843160];
-    assert!(matches!(transfer_key_poll.data.kind, polls::PollKind::TransferKey));
+    assert!(matches!(
+        transfer_key_poll.data.kind,
+        polls::PollKind::TransferKey
+    ));
     assert_eq!(
         transfer_key_poll.data.tx,
         "78e2698855ffb323320c8d4ae1dc85eb3c8e10b3a75180a7aadb238f769f6e8d"
@@ -113,7 +116,10 @@ fn test_full_poll_flow_transfer_key() {
     assert_eq!(transfer_key_poll.data.chain, "scroll");
 
     let gateway_tx_poll = &state.polls[&2843161];
-    assert!(matches!(gateway_tx_poll.data.kind, polls::PollKind::GatewayTx));
+    assert!(matches!(
+        gateway_tx_poll.data.kind,
+        polls::PollKind::GatewayTx
+    ));
     assert_eq!(
         gateway_tx_poll.data.tx,
         "05a409afd25c53a59f98a48721a5274a450b4ac5a2007842b4e168a111af806e"

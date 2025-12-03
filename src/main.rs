@@ -1,6 +1,6 @@
 use axelar_monitor::{
     Config, Height, IoCommand, IoResponse, ProcessingMessage, ProcessingResponse, ProcessingState,
-    process_single_message, process_single_io_command,
+    process_single_io_command, process_single_message,
 };
 use log::info;
 use std::sync::mpsc;
@@ -91,7 +91,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let lcd_url = config.lcd_url.clone();
     let poll_interval = config.poll_interval_seconds;
     let metrics_port = config.metrics_port;
-    let metrics_namespace = config.metrics_namespace.clone();
 
     let msg_tx_io = msg_tx.clone();
     thread::spawn(move || {
@@ -125,7 +124,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     let msg_tx_metrics = msg_tx.clone();
     thread::spawn(move || {
-        metrics::metrics_server_loop(msg_tx_metrics, metrics_port, metrics_namespace);
+        metrics::metrics_server_loop(msg_tx_metrics, metrics_port);
     });
 
     processing_loop(msg_rx, cmd_tx, config)

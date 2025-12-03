@@ -80,7 +80,6 @@ fn test_with_http_server() {
         lcd_url: base_url.clone(),
         poll_interval_seconds: 6,
         metrics_port: 9090,
-        metrics_namespace: "axelar_monitor".to_string(),
         broadcaster: vec![],
         chain_params: vec![],
     };

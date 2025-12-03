@@ -5,6 +5,7 @@ edition = "2024"
 license-file = "LICENSE"
 
 [dependencies]
+aetos = "0.1.0"
 base64 = "0.22.1"
 cosmos-sdk-proto = { version = "0.27.0", default-features = false, features = [] }
 hex = "0.4"

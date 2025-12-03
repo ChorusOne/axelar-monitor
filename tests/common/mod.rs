@@ -1,4 +1,6 @@
-use axelar_monitor::{Config, Height, IoCommand, IoResponse, ProcessingMessage, blocks, config, rpc};
+use axelar_monitor::{
+    Config, Height, IoCommand, IoResponse, ProcessingMessage, blocks, config, rpc,
+};
 
 pub fn load_test_block_from_json(test_type: &str, height: u64) -> blocks::Block {
     let path = format!("test_data/{}/block_{}.json", test_type, height);
@@ -41,7 +43,6 @@ pub fn create_test_config_with_broadcasters(broadcasters: Vec<config::Broadcaste
         lcd_url: "http://test".to_string(),
         poll_interval_seconds: 6,
         metrics_port: 9090,
-        metrics_namespace: "axelar_monitor".to_string(),
         broadcaster: broadcasters,
         chain_params: vec![
             config::ChainParams {

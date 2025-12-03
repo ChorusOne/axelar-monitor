@@ -3,7 +3,7 @@ use cosmos_sdk_proto::cosmos::tx::v1beta1::{Tx, TxBody};
 use log::info;
 use prost::Message;
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use crate::config::ChainParams;
 use crate::generated::axelar::evm::v1beta1::event::{self, Event};
@@ -300,7 +300,7 @@ pub struct RawBlockData {
 
 pub fn process_block(
     block: &Block,
-    chain_params: &HashMap<String, ChainParams>,
+    chain_params: &BTreeMap<String, ChainParams>,
     height: u64,
 ) -> Result<RawBlockData, Box<dyn std::error::Error>> {
     let txs = get_txs(block)?;
@@ -379,8 +379,8 @@ mod tests {
         parse_block(&json).unwrap()
     }
 
-    fn create_test_chain_params() -> HashMap<String, ChainParams> {
-        let mut params = HashMap::new();
+    fn create_test_chain_params() -> BTreeMap<String, ChainParams> {
+        let mut params = BTreeMap::new();
         params.insert(
             "avalanche".to_string(),
             ChainParams {
@@ -524,7 +524,7 @@ mod tests {
 
     #[test]
     fn test_fantom_vote_regression_batch_request() {
-        let mut chain_params = HashMap::new();
+        let mut chain_params = BTreeMap::new();
         chain_params.insert(
             "fantom".to_string(),
             ChainParams {

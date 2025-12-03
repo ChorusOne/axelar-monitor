@@ -12,7 +12,7 @@ use blocks::Block;
 use config::ChainParams;
 use log::{debug, error, info, warn};
 use polls::{Poll, PollData};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::mpsc;
 
 #[derive(Debug, Clone, Copy)]
@@ -40,19 +40,64 @@ pub enum IoResult {
     Head(u64),
 }
 
-#[derive(Debug, Clone)]
-pub struct BroadcasterStats {
-    pub total_votes: u64,
-    pub disagreed_with_majority: u64,
-    pub missed_votes: u64,
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum VoteResultType {
+    Agreed,
+    Disagreed,
+    Missed,
 }
 
-#[derive(Debug)]
+impl PartialOrd for VoteResultType {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for VoteResultType {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match (self, other) {
+            (VoteResultType::Agreed, VoteResultType::Agreed) => std::cmp::Ordering::Equal,
+            (VoteResultType::Agreed, _) => std::cmp::Ordering::Less,
+            (VoteResultType::Disagreed, VoteResultType::Agreed) => std::cmp::Ordering::Greater,
+            (VoteResultType::Disagreed, VoteResultType::Disagreed) => std::cmp::Ordering::Equal,
+            (VoteResultType::Disagreed, VoteResultType::Missed) => std::cmp::Ordering::Less,
+            (VoteResultType::Missed, VoteResultType::Missed) => std::cmp::Ordering::Equal,
+            (VoteResultType::Missed, _) => std::cmp::Ordering::Greater,
+        }
+    }
+}
+
+impl std::fmt::Display for VoteResultType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VoteResultType::Agreed => write!(f, "agreed"),
+            VoteResultType::Disagreed => write!(f, "disagreed"),
+            VoteResultType::Missed => write!(f, "missed"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, aetos::Label)]
+pub struct VoteResult {
+    pub broadcaster: String,
+    pub chain: String,
+    pub result: VoteResultType,
+}
+
+#[aetos::metrics(prefix = "axelar_monitor")]
 pub struct MetricsSnapshot {
-    pub last_heartbeat: HashMap<String, u64>,
-    pub chain_height: u64,
+    #[counter(help = "Total number of fetch errors")]
     pub fetch_error_count: u64,
-    pub broadcaster_stats: HashMap<(String, String), BroadcasterStats>,
+    #[counter(
+        help = "Last height at which broadcaster sent heartbeat",
+        label = "broadcaster"
+    )]
+    pub last_heartbeat: BTreeMap<String, u64>,
+    #[counter(help = "Current chain height")]
+    pub chain_height: u64,
+    #[counter(help = "Broadcaster vote results by chain and outcome")]
+    pub broadcaster_votes: BTreeMap<VoteResult, u64>,
+    #[counter(help = "Last block height that was processed")]
     pub last_processed_height: u64,
 }
 
@@ -70,40 +115,42 @@ pub enum IoResponse {
 pub struct ProcessingState {
     pub chain_height: u64,
     pub fetch_error_count: u64,
-    pub last_heartbeat: HashMap<String, u64>,
-    pub chain_params: HashMap<String, ChainParams>,
-    pub polls: HashMap<u64, Poll>,
+    pub last_heartbeat: BTreeMap<String, u64>,
+    pub chain_params: BTreeMap<String, ChainParams>,
+    pub polls: BTreeMap<u64, Poll>,
     pub chain_tip: u64,
     pub last_processed_height: u64,
-    pub broadcaster_stats: HashMap<(String, String), BroadcasterStats>,
+    pub vote_results: BTreeMap<VoteResult, u64>,
 }
 
 impl ProcessingState {
     pub fn new(config: &Config) -> Self {
-        let last_heartbeat: HashMap<String, u64> = config
+        let last_heartbeat: BTreeMap<String, u64> = config
             .broadcaster
             .iter()
             .map(|bc| (bc.name.clone(), 0))
             .collect();
 
-        let mut chain_params: HashMap<String, ChainParams> =
-            HashMap::with_capacity(config.chain_params.len());
+        let mut chain_params: BTreeMap<String, ChainParams> = BTreeMap::new();
         for chain_param in &config.chain_params {
             chain_params.insert(chain_param.name.to_lowercase(), chain_param.clone());
         }
 
-        let mut broadcaster_stats = HashMap::new();
+        let mut vote_results = BTreeMap::new();
         for broadcaster in &config.broadcaster {
             for chain_param in &config.chain_params {
-                let key = (broadcaster.name.clone(), chain_param.name.to_lowercase());
-                broadcaster_stats.insert(
-                    key,
-                    BroadcasterStats {
-                        total_votes: 0,
-                        disagreed_with_majority: 0,
-                        missed_votes: 0,
-                    },
-                );
+                for result_type in [
+                    VoteResultType::Agreed,
+                    VoteResultType::Disagreed,
+                    VoteResultType::Missed,
+                ] {
+                    let key = VoteResult {
+                        broadcaster: broadcaster.name.clone(),
+                        chain: chain_param.name.to_lowercase(),
+                        result: result_type,
+                    };
+                    vote_results.insert(key, 0);
+                }
             }
         }
 
@@ -112,10 +159,10 @@ impl ProcessingState {
             fetch_error_count: 0,
             last_heartbeat,
             chain_params,
-            polls: HashMap::new(),
+            polls: BTreeMap::new(),
             chain_tip: 0,
             last_processed_height: 0,
-            broadcaster_stats,
+            vote_results,
         }
     }
 }
@@ -123,9 +170,9 @@ impl ProcessingState {
 fn analyze_poll_completion(
     poll: &Poll,
     config: &Config,
-    broadcaster_stats: &mut HashMap<(String, String), BroadcasterStats>,
+    vote_results: &mut BTreeMap<VoteResult, u64>,
 ) {
-    let mut tx_id_counts: HashMap<&str, u64> = HashMap::new();
+    let mut tx_id_counts: BTreeMap<&str, u64> = BTreeMap::new();
     for vote in &poll.votes {
         *tx_id_counts.entry(&vote.tx_id).or_insert(0) += 1;
     }
@@ -135,7 +182,7 @@ fn analyze_poll_completion(
         .max_by_key(|(_, count)| *count)
         .map(|(tx_id, _)| *tx_id);
 
-    let sender_to_broadcaster: HashMap<String, &str> = config
+    let sender_to_broadcaster: BTreeMap<String, &str> = config
         .broadcaster
         .iter()
         .map(|bc| (bc.address.clone(), bc.name.as_str()))
@@ -148,15 +195,13 @@ fn analyze_poll_completion(
         .collect();
 
     for broadcaster in &config.broadcaster {
-        let key = (broadcaster.name.clone(), poll.data.chain.to_lowercase());
-        let stats = broadcaster_stats.entry(key).or_insert(BroadcasterStats {
-            total_votes: 0,
-            disagreed_with_majority: 0,
-            missed_votes: 0,
-        });
-
         if !voters.contains(broadcaster.name.as_str()) {
-            stats.missed_votes += 1;
+            let key = VoteResult {
+                broadcaster: broadcaster.name.clone(),
+                chain: poll.data.chain.to_lowercase(),
+                result: VoteResultType::Missed,
+            };
+            *vote_results.entry(key).or_insert(0) += 1;
             warn!(
                 "Missed vote: broadcaster={} chain={} poll_id={}",
                 broadcaster.name, poll.data.chain, poll.poll_id
@@ -167,16 +212,20 @@ fn analyze_poll_completion(
     if let Some(majority) = majority_tx_id {
         for vote in &poll.votes {
             if let Some(broadcaster_name) = sender_to_broadcaster.get(&vote.sender_id) {
-                let key = (broadcaster_name.to_string(), vote.chain.to_lowercase());
-                let stats = broadcaster_stats.entry(key).or_insert(BroadcasterStats {
-                    total_votes: 0,
-                    disagreed_with_majority: 0,
-                    missed_votes: 0,
-                });
+                let result_type = if vote.tx_id == majority {
+                    VoteResultType::Agreed
+                } else {
+                    VoteResultType::Disagreed
+                };
 
-                stats.total_votes += 1;
+                let key = VoteResult {
+                    broadcaster: broadcaster_name.to_string(),
+                    chain: vote.chain.to_lowercase(),
+                    result: result_type.clone(),
+                };
+                *vote_results.entry(key).or_insert(0) += 1;
+
                 if vote.tx_id != majority {
-                    stats.disagreed_with_majority += 1;
                     warn!(
                         "Disagreed vote: broadcaster={} chain={} poll_id={} voted_tx={} majority_tx={}",
                         broadcaster_name, vote.chain, vote.poll_id, vote.tx_id, majority
@@ -237,7 +286,7 @@ pub fn process_single_message(
 
                 for poll_id in expiring_poll_ids {
                     if let Some(poll) = state.polls.get(&poll_id) {
-                        analyze_poll_completion(poll, config, &mut state.broadcaster_stats);
+                        analyze_poll_completion(poll, config, &mut state.vote_results);
                     }
                 }
 
@@ -309,7 +358,7 @@ pub fn process_single_message(
                 );
 
                 let poll_events = polls::extract_all_poll_events(&block_results);
-                let tx_to_poll_ids: HashMap<String, u64> = poll_events
+                let tx_to_poll_ids: BTreeMap<String, u64> = poll_events
                     .iter()
                     .map(|pe| (hex::encode(&pe.tx_id), pe.poll_id))
                     .collect();
@@ -339,15 +388,18 @@ pub fn process_single_message(
                     .insert(chain.name.to_lowercase(), chain.clone());
 
                 for broadcaster in &config.broadcaster {
-                    let key = (broadcaster.name.clone(), chain.name.to_lowercase());
-                    state
-                        .broadcaster_stats
-                        .entry(key)
-                        .or_insert(BroadcasterStats {
-                            total_votes: 0,
-                            disagreed_with_majority: 0,
-                            missed_votes: 0,
-                        });
+                    for result_type in [
+                        VoteResultType::Agreed,
+                        VoteResultType::Disagreed,
+                        VoteResultType::Missed,
+                    ] {
+                        let key = VoteResult {
+                            broadcaster: broadcaster.name.clone(),
+                            chain: chain.name.to_lowercase(),
+                            result: result_type,
+                        };
+                        state.vote_results.entry(key).or_insert(0);
+                    }
                 }
 
                 vec![]
@@ -384,7 +436,7 @@ pub fn process_single_message(
                 last_heartbeat: state.last_heartbeat.clone(),
                 chain_height: state.chain_height,
                 fetch_error_count: state.fetch_error_count,
-                broadcaster_stats: state.broadcaster_stats.clone(),
+                broadcaster_votes: state.vote_results.clone(),
                 last_processed_height: state.last_processed_height,
             };
             vec![ProcessingResponse::SendMetricsSnapshot(
@@ -475,13 +527,12 @@ mod tests {
             lcd_url: "".to_string(),
             poll_interval_seconds: 5,
             metrics_port: 9090,
-            metrics_namespace: "axelar_monitor".to_string(),
             broadcaster: vec![],
             chain_params: vec![],
         };
 
         let poll = create_test_poll(1, vec![]);
-        let mut stats = HashMap::new();
+        let mut stats = BTreeMap::new();
 
         analyze_poll_completion(&poll, &config, &mut stats);
 
@@ -495,7 +546,6 @@ mod tests {
             lcd_url: "".to_string(),
             poll_interval_seconds: 5,
             metrics_port: 9090,
-            metrics_namespace: "axelar_monitor".to_string(),
             broadcaster: vec![
                 Broadcaster {
                     name: "broadcaster1".to_string(),
@@ -527,19 +577,35 @@ mod tests {
         ];
 
         let poll = create_test_poll(1, votes);
-        let mut stats = HashMap::new();
+        let mut stats = BTreeMap::new();
 
         analyze_poll_completion(&poll, &config, &mut stats);
 
-        let key1 = ("broadcaster1".to_string(), "ethereum".to_string());
-        let key2 = ("broadcaster2".to_string(), "ethereum".to_string());
+        let agreed1 = VoteResult {
+            broadcaster: "broadcaster1".to_string(),
+            chain: "ethereum".to_string(),
+            result: VoteResultType::Agreed,
+        };
+        let agreed2 = VoteResult {
+            broadcaster: "broadcaster2".to_string(),
+            chain: "ethereum".to_string(),
+            result: VoteResultType::Agreed,
+        };
+        let missed1 = VoteResult {
+            broadcaster: "broadcaster1".to_string(),
+            chain: "ethereum".to_string(),
+            result: VoteResultType::Missed,
+        };
+        let missed2 = VoteResult {
+            broadcaster: "broadcaster2".to_string(),
+            chain: "ethereum".to_string(),
+            result: VoteResultType::Missed,
+        };
 
-        assert_eq!(stats.get(&key1).unwrap().total_votes, 1);
-        assert_eq!(stats.get(&key1).unwrap().disagreed_with_majority, 0);
-        assert_eq!(stats.get(&key1).unwrap().missed_votes, 0);
-        assert_eq!(stats.get(&key2).unwrap().total_votes, 1);
-        assert_eq!(stats.get(&key2).unwrap().disagreed_with_majority, 0);
-        assert_eq!(stats.get(&key2).unwrap().missed_votes, 0);
+        assert_eq!(*stats.get(&agreed1).unwrap_or(&0), 1);
+        assert_eq!(*stats.get(&missed1).unwrap_or(&0), 0);
+        assert_eq!(*stats.get(&agreed2).unwrap_or(&0), 1);
+        assert_eq!(*stats.get(&missed2).unwrap_or(&0), 0);
     }
 
     #[test]
@@ -549,7 +615,6 @@ mod tests {
             lcd_url: "".to_string(),
             poll_interval_seconds: 5,
             metrics_port: 9090,
-            metrics_namespace: "axelar_monitor".to_string(),
             broadcaster: vec![
                 Broadcaster {
                     name: "good_broadcaster".to_string(),
@@ -588,19 +653,35 @@ mod tests {
         ];
 
         let poll = create_test_poll(1, votes);
-        let mut stats = HashMap::new();
+        let mut stats = BTreeMap::new();
 
         analyze_poll_completion(&poll, &config, &mut stats);
 
-        let good_key = ("good_broadcaster".to_string(), "ethereum".to_string());
-        let bad_key = ("bad_broadcaster".to_string(), "ethereum".to_string());
+        let good_agreed = VoteResult {
+            broadcaster: "good_broadcaster".to_string(),
+            chain: "ethereum".to_string(),
+            result: VoteResultType::Agreed,
+        };
+        let bad_disagreed = VoteResult {
+            broadcaster: "bad_broadcaster".to_string(),
+            chain: "ethereum".to_string(),
+            result: VoteResultType::Disagreed,
+        };
+        let good_missed = VoteResult {
+            broadcaster: "good_broadcaster".to_string(),
+            chain: "ethereum".to_string(),
+            result: VoteResultType::Missed,
+        };
+        let bad_missed = VoteResult {
+            broadcaster: "bad_broadcaster".to_string(),
+            chain: "ethereum".to_string(),
+            result: VoteResultType::Missed,
+        };
 
-        assert_eq!(stats.get(&good_key).unwrap().total_votes, 2);
-        assert_eq!(stats.get(&good_key).unwrap().disagreed_with_majority, 0);
-        assert_eq!(stats.get(&good_key).unwrap().missed_votes, 0);
-        assert_eq!(stats.get(&bad_key).unwrap().total_votes, 1);
-        assert_eq!(stats.get(&bad_key).unwrap().disagreed_with_majority, 1);
-        assert_eq!(stats.get(&bad_key).unwrap().missed_votes, 0);
+        assert_eq!(*stats.get(&good_agreed).unwrap_or(&0), 2);
+        assert_eq!(*stats.get(&good_missed).unwrap_or(&0), 0);
+        assert_eq!(*stats.get(&bad_disagreed).unwrap_or(&0), 1);
+        assert_eq!(*stats.get(&bad_missed).unwrap_or(&0), 0);
     }
 
     #[test]
@@ -610,7 +691,6 @@ mod tests {
             lcd_url: "".to_string(),
             poll_interval_seconds: 5,
             metrics_port: 9090,
-            metrics_namespace: "axelar_monitor".to_string(),
             broadcaster: vec![
                 Broadcaster {
                     name: "correct_broadcaster".to_string(),
@@ -649,19 +729,23 @@ mod tests {
         ];
 
         let poll = create_test_poll(1, votes);
-        let mut stats = HashMap::new();
+        let mut stats = BTreeMap::new();
 
         analyze_poll_completion(&poll, &config, &mut stats);
 
-        let correct_key = ("correct_broadcaster".to_string(), "fantom".to_string());
-        let empty_key = ("empty_broadcaster".to_string(), "fantom".to_string());
+        let correct_agreed = VoteResult {
+            broadcaster: "correct_broadcaster".to_string(),
+            chain: "fantom".to_string(),
+            result: VoteResultType::Agreed,
+        };
+        let empty_disagreed = VoteResult {
+            broadcaster: "empty_broadcaster".to_string(),
+            chain: "fantom".to_string(),
+            result: VoteResultType::Disagreed,
+        };
 
-        assert_eq!(stats.get(&correct_key).unwrap().total_votes, 2);
-        assert_eq!(stats.get(&correct_key).unwrap().disagreed_with_majority, 0);
-        assert_eq!(stats.get(&correct_key).unwrap().missed_votes, 0);
-        assert_eq!(stats.get(&empty_key).unwrap().total_votes, 1);
-        assert_eq!(stats.get(&empty_key).unwrap().disagreed_with_majority, 1);
-        assert_eq!(stats.get(&empty_key).unwrap().missed_votes, 0);
+        assert_eq!(*stats.get(&correct_agreed).unwrap_or(&0), 2);
+        assert_eq!(*stats.get(&empty_disagreed).unwrap_or(&0), 1);
     }
 
     #[test]
@@ -671,7 +755,6 @@ mod tests {
             lcd_url: "".to_string(),
             poll_interval_seconds: 5,
             metrics_port: 9090,
-            metrics_namespace: "axelar_monitor".to_string(),
             broadcaster: vec![Broadcaster {
                 name: "known_broadcaster".to_string(),
                 address: "known_addr".to_string(),
@@ -697,15 +780,17 @@ mod tests {
         ];
 
         let poll = create_test_poll(1, votes);
-        let mut stats = HashMap::new();
+        let mut stats = BTreeMap::new();
 
         analyze_poll_completion(&poll, &config, &mut stats);
 
         assert_eq!(stats.len(), 1, "Only known broadcaster should be tracked");
-        let key = ("known_broadcaster".to_string(), "ethereum".to_string());
-        assert_eq!(stats.get(&key).unwrap().total_votes, 1);
-        assert_eq!(stats.get(&key).unwrap().disagreed_with_majority, 0);
-        assert_eq!(stats.get(&key).unwrap().missed_votes, 0);
+        let agreed = VoteResult {
+            broadcaster: "known_broadcaster".to_string(),
+            chain: "ethereum".to_string(),
+            result: VoteResultType::Agreed,
+        };
+        assert_eq!(*stats.get(&agreed).unwrap_or(&0), 1);
     }
 
     #[test]
@@ -715,7 +800,6 @@ mod tests {
             lcd_url: "".to_string(),
             poll_interval_seconds: 5,
             metrics_port: 9090,
-            metrics_namespace: "axelar_monitor".to_string(),
             broadcaster: vec![
                 Broadcaster {
                     name: "active_broadcaster".to_string(),
@@ -742,30 +826,28 @@ mod tests {
         }];
 
         let poll = create_test_poll(1, votes);
-        let mut stats = HashMap::new();
+        let mut stats = BTreeMap::new();
 
         analyze_poll_completion(&poll, &config, &mut stats);
 
-        let active_key = ("active_broadcaster".to_string(), "ethereum".to_string());
-        let inactive_key = ("inactive_broadcaster".to_string(), "ethereum".to_string());
-        let another_inactive_key = ("another_inactive".to_string(), "ethereum".to_string());
+        let active_agreed = VoteResult {
+            broadcaster: "active_broadcaster".to_string(),
+            chain: "ethereum".to_string(),
+            result: VoteResultType::Agreed,
+        };
+        let inactive_missed = VoteResult {
+            broadcaster: "inactive_broadcaster".to_string(),
+            chain: "ethereum".to_string(),
+            result: VoteResultType::Missed,
+        };
+        let another_inactive_missed = VoteResult {
+            broadcaster: "another_inactive".to_string(),
+            chain: "ethereum".to_string(),
+            result: VoteResultType::Missed,
+        };
 
-        assert_eq!(stats.get(&active_key).unwrap().total_votes, 1);
-        assert_eq!(stats.get(&active_key).unwrap().disagreed_with_majority, 0);
-        assert_eq!(stats.get(&active_key).unwrap().missed_votes, 0);
-
-        assert_eq!(stats.get(&inactive_key).unwrap().total_votes, 0);
-        assert_eq!(stats.get(&inactive_key).unwrap().disagreed_with_majority, 0);
-        assert_eq!(stats.get(&inactive_key).unwrap().missed_votes, 1);
-
-        assert_eq!(stats.get(&another_inactive_key).unwrap().total_votes, 0);
-        assert_eq!(
-            stats
-                .get(&another_inactive_key)
-                .unwrap()
-                .disagreed_with_majority,
-            0
-        );
-        assert_eq!(stats.get(&another_inactive_key).unwrap().missed_votes, 1);
+        assert_eq!(*stats.get(&active_agreed).unwrap_or(&0), 1);
+        assert_eq!(*stats.get(&inactive_missed).unwrap_or(&0), 1);
+        assert_eq!(*stats.get(&another_inactive_missed).unwrap_or(&0), 1);
     }
 }
