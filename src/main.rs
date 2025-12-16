@@ -81,7 +81,12 @@ fn processing_loop(
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    simple_logger::init_with_level(log::Level::Info).unwrap();
+    let log_level: String = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
+    let log_level = log_level
+        .parse()
+        .unwrap_or_else(|e| panic!("failed to parse log level '{}': {}", log_level, e));
+
+    simple_logger::init_with_level(log_level).unwrap();
     let config = Config::load("config.toml")?;
 
     let (cmd_tx, cmd_rx) = mpsc::channel::<IoCommand>();
