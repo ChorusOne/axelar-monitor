@@ -6,6 +6,13 @@ pub mod axelar {
             include!("axelar.evm.v1beta1.rs");
         }
     }
+    pub mod nexus {
+        pub mod exported {
+            pub mod v1beta1 {
+                include!("axelar.nexus.exported.v1beta1.rs");
+            }
+        }
+    }
     pub mod reward {
         pub mod v1beta1 {
             include!("axelar.reward.v1beta1.rs");

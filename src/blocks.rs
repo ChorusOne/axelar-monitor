@@ -64,7 +64,7 @@ fn extract_decoded_votes_from_tx(tx: &TxBody) -> Vec<DecodedVote> {
             });
 
             DecodedVote {
-                sender: vote.sender,
+                sender: vote.sender.into(),
                 poll_id: vote.poll_id,
                 vote_events,
             }
