@@ -12,7 +12,6 @@ use crate::generated::axelar::evm::v1beta1::{
     ConfirmTransferKeyRequest, VoteEvents,
 };
 use crate::generated::axelar::reward::v1beta1::RefundMsgRequest;
-use crate::generated::axelar::tss::v1beta1::HeartBeatRequest;
 use crate::generated::axelar::vote::v1beta1::VoteRequest;
 use crate::polls::{PollData, PollKind, PollRequest, PollVote};
 
@@ -80,14 +79,6 @@ pub fn extract_vote_requests(tx: &TxBody) -> Vec<VoteRequest> {
         .collect()
 }
 
-pub fn extract_heartbeat_requests(tx: &TxBody) -> Vec<HeartBeatRequest> {
-    let refund_messages = extract_refund_messages(tx);
-    let heartbeat_messages: Vec<HeartBeatRequest> = refund_messages
-        .iter()
-        .filter_map(|rm| extract_heartbeat_request(rm))
-        .collect();
-    heartbeat_messages
-}
 fn extract_refund_messages(tx_body: &TxBody) -> Vec<cosmos_sdk_proto::Any> {
     let mut refund_messages = Vec::new();
 
@@ -175,17 +166,6 @@ fn extract_vote_request(refund_msg: &cosmos_sdk_proto::Any) -> Option<VoteReques
     }
 
     VoteRequest::decode(&inner.value[..]).ok()
-}
-
-fn extract_heartbeat_request(refund_msg: &cosmos_sdk_proto::Any) -> Option<HeartBeatRequest> {
-    let refund = RefundMsgRequest::decode(&refund_msg.value[..]).ok()?;
-    let inner = refund.inner_message?;
-
-    if inner.type_url != "/axelar.tss.v1beta1.HeartBeatRequest" {
-        return None;
-    }
-
-    HeartBeatRequest::decode(&inner.value[..]).ok()
 }
 
 fn event_name(evt: &Option<event::Event>) -> &str {
@@ -293,7 +273,6 @@ pub fn get_txs(block: &Block) -> Result<Vec<TxBody>, Box<dyn std::error::Error>>
 }
 
 pub struct RawBlockData {
-    pub heartbeat_addrs: Vec<String>,
     pub poll_creations: Vec<PollData>,
     pub votes: Vec<PollVote>,
 }
@@ -304,12 +283,6 @@ pub fn process_block(
     height: u64,
 ) -> Result<RawBlockData, Box<dyn std::error::Error>> {
     let txs = get_txs(block)?;
-
-    let heartbeat_addrs: Vec<String> = txs
-        .iter()
-        .flat_map(|tx| extract_heartbeat_requests(tx))
-        .map(|hb| hex::encode(&hb.sender))
-        .collect();
 
     let raw_reqs = extract_raw_poll_requests(&txs);
     let poll_requests: Vec<PollRequest> = raw_reqs
@@ -362,7 +335,6 @@ pub fn process_block(
     let votes = get_votes_from_txs(&txs);
 
     Ok(RawBlockData {
-        heartbeat_addrs,
         poll_creations,
         votes,
     })

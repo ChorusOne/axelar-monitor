@@ -88,11 +88,6 @@ pub struct VoteResult {
 pub struct MetricsSnapshot {
     #[counter(help = "Total number of fetch errors")]
     pub fetch_error_count: u64,
-    #[counter(
-        help = "Last height at which broadcaster sent heartbeat",
-        label = "broadcaster"
-    )]
-    pub last_heartbeat: BTreeMap<String, u64>,
     #[counter(help = "Current chain height")]
     pub chain_height: u64,
     #[counter(help = "Broadcaster vote results by chain and outcome")]
@@ -115,7 +110,6 @@ pub enum IoResponse {
 pub struct ProcessingState {
     pub chain_height: u64,
     pub fetch_error_count: u64,
-    pub last_heartbeat: BTreeMap<String, u64>,
     pub chain_params: BTreeMap<String, ChainParams>,
     pub polls: BTreeMap<u64, Poll>,
     pub chain_tip: u64,
@@ -125,12 +119,6 @@ pub struct ProcessingState {
 
 impl ProcessingState {
     pub fn new(config: &Config) -> Self {
-        let last_heartbeat: BTreeMap<String, u64> = config
-            .broadcaster
-            .iter()
-            .map(|bc| (bc.name.clone(), 0))
-            .collect();
-
         let mut chain_params: BTreeMap<String, ChainParams> = BTreeMap::new();
         for chain_param in &config.chain_params {
             chain_params.insert(chain_param.name.to_lowercase(), chain_param.clone());
@@ -157,7 +145,6 @@ impl ProcessingState {
         ProcessingState {
             chain_height: 0,
             fetch_error_count: 0,
-            last_heartbeat,
             chain_params,
             polls: BTreeMap::new(),
             chain_tip: 0,
@@ -297,16 +284,6 @@ pub fn process_single_message(
 
                 match blocks::process_block(&block, &state.chain_params, height) {
                     Ok(data) => {
-                        for addr in data.heartbeat_addrs {
-                            for bc in &config.broadcaster {
-                                if bc.address == addr {
-                                    info!("Height {}: {} heartbeat detected", height, bc.name);
-                                    state.last_heartbeat.insert(bc.name.clone(), height);
-                                    break;
-                                }
-                            }
-                        }
-
                         let mut responses = Vec::new();
                         if !data.poll_creations.is_empty() {
                             info!(
@@ -433,7 +410,6 @@ pub fn process_single_message(
         },
         ProcessingMessage::QueryMetrics(response_tx) => {
             let snapshot = MetricsSnapshot {
-                last_heartbeat: state.last_heartbeat.clone(),
                 chain_height: state.chain_height,
                 fetch_error_count: state.fetch_error_count,
                 broadcaster_votes: state.vote_results.clone(),
