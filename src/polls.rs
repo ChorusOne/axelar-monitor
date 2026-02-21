@@ -65,17 +65,26 @@ struct PollParticipantsJson {
 }
 
 fn decode_attribute_key(attr: &crate::rpc::EventAttribute) -> Option<String> {
-    let key_bytes = general_purpose::STANDARD.decode(&attr.key).ok()?;
-    String::from_utf8(key_bytes).ok()
+    if let Ok(key_bytes) = general_purpose::STANDARD.decode(&attr.key) {
+        if let Ok(s) = String::from_utf8(key_bytes) {
+            return Some(s);
+        }
+    }
+    Some(attr.key.clone())
 }
 
 fn decode_attribute_value<T: serde::de::DeserializeOwned>(
     attr: &crate::rpc::EventAttribute,
 ) -> Option<T> {
     let value = attr.value.as_ref()?;
-    let value_bytes = general_purpose::STANDARD.decode(value).ok()?;
-    let value_str = String::from_utf8(value_bytes).ok()?;
-    serde_json::from_str(&value_str).ok()
+    if let Ok(value_bytes) = general_purpose::STANDARD.decode(value) {
+        if let Ok(value_str) = String::from_utf8(value_bytes) {
+            if let Ok(parsed) = serde_json::from_str(&value_str) {
+                return Some(parsed);
+            }
+        }
+    }
+    serde_json::from_str(value).ok()
 }
 
 fn extract_poll_mappings_from_json(event: &TendermintEvent) -> Vec<PollEvent> {
