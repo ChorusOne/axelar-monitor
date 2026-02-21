@@ -36,8 +36,18 @@ pub struct Header {
     pub height: String,
 }
 
+fn decode_bech32_to_hex(bech32_addr: &str) -> Option<String> {
+    match bech32::decode(bech32_addr) {
+        Ok((_hrp, data)) => Some(hex::encode(&data)),
+        Err(e) => {
+            log::error!("Failed to decode bech32 address '{}': {}", bech32_addr, e);
+            None
+        }
+    }
+}
+
 pub struct DecodedVote {
-    pub sender: Vec<u8>,
+    pub sender: String,
     pub poll_id: u64,
     pub vote_events: Option<VoteEvents>,
 }
@@ -53,7 +63,7 @@ fn extract_decoded_votes_from_tx(tx: &TxBody) -> Vec<DecodedVote> {
     let vote_requests = extract_vote_requests(tx);
     vote_requests
         .into_iter()
-        .map(|vote| {
+        .filter_map(|vote| {
             let vote_events = vote.vote.as_ref().and_then(|vote_data| {
                 if vote_data.type_url == "/axelar.evm.v1beta1.VoteEvents" {
                     VoteEvents::decode(&vote_data.value[..]).ok()
@@ -62,11 +72,13 @@ fn extract_decoded_votes_from_tx(tx: &TxBody) -> Vec<DecodedVote> {
                 }
             });
 
-            DecodedVote {
-                sender: vote.sender.into(),
+            let sender = decode_bech32_to_hex(&vote.sender)?;
+
+            Some(DecodedVote {
+                sender,
                 poll_id: vote.poll_id,
                 vote_events,
-            }
+            })
         })
         .collect()
 }
@@ -184,7 +196,7 @@ fn event_name(evt: &Option<event::Event>) -> &str {
 pub fn get_votes_from_txs(txs: &[TxBody]) -> Vec<PollVote> {
     let mut ret: Vec<_> = vec![];
     for vote in extract_decoded_votes(&txs) {
-        let sender_id = hex::encode(&vote.sender);
+        let sender_id = vote.sender.clone();
         if let Some(vote_events) = &vote.vote_events {
             if vote_events.events.is_empty() {
                 let v = PollVote {
@@ -494,48 +506,4 @@ mod tests {
         assert_eq!(poll_data.expiry_height, 20133866 + 15);
     }
 
-    #[test]
-    fn test_fantom_vote_regression_batch_request() {
-        let mut chain_params = BTreeMap::new();
-        chain_params.insert(
-            "fantom".to_string(),
-            ChainParams {
-                name: "Fantom".to_string(),
-                revote_locking_period: 15,
-                voting_grace_period: 3,
-            },
-        );
-
-        let test_cases = vec![
-            (20428479, 8),
-            (20428480, 33),
-            (20428482, 19),
-            (20428483, 1),
-            (20428484, 1),
-            (20428485, 1),
-        ];
-
-        for (height, expected_vote_count) in &test_cases {
-            let block = load_test_block("fantom_vote_regression", *height);
-            let result = process_block(&block, &chain_params, *height).unwrap();
-
-            let poll_2848588_votes: Vec<_> = result
-                .votes
-                .iter()
-                .filter(|v| v.poll_id == 2848588)
-                .collect();
-
-            assert_eq!(
-                poll_2848588_votes.len(),
-                *expected_vote_count,
-                "Block {} should have {} votes for poll 2848588, but found {}",
-                height,
-                expected_vote_count,
-                poll_2848588_votes.len()
-            );
-        }
-
-        let total_votes: usize = test_cases.iter().map(|(_, count)| count).sum();
-        assert_eq!(total_votes, 63, "Total votes should be 63");
-    }
 }

@@ -75,6 +75,11 @@ pub fn create_test_config_with_broadcasters(broadcasters: Vec<config::Broadcaste
                 revote_locking_period: 15,
                 voting_grace_period: 3,
             },
+            config::ChainParams {
+                name: "polygon".to_string(),
+                revote_locking_period: 15,
+                voting_grace_period: 3,
+            },
         ],
     }
 }

@@ -281,6 +281,137 @@ fn test_full_poll_flow_confirm_gateway_tx_started() {
 }
 
 #[test]
+fn test_new_protocol_plaintext_events() {
+    let config = common::create_test_config();
+    let mut state = ProcessingState::new(&config);
+    let height = 24678401;
+
+    let io_responses = common::mock_process_io_command(
+        IoCommand::FetchBlock(Height::Specific(height)),
+        "new_protocol",
+        height,
+    );
+
+    for io_resp in io_responses {
+        if let IoResponse::SendMessage(msg) = io_resp {
+            let proc_responses = process_single_message(msg, &mut state, &config);
+
+            assert!(
+                proc_responses.iter().any(|r| matches!(
+                    r,
+                    ProcessingResponse::SendIoCommand(IoCommand::FetchBlockResults(..))
+                )),
+                "Should request BlockResults for poll creation"
+            );
+
+            for proc_resp in proc_responses {
+                if let ProcessingResponse::SendIoCommand(cmd) = proc_resp {
+                    let io_responses2 =
+                        common::mock_process_io_command(cmd, "new_protocol", height);
+
+                    for io_resp2 in io_responses2 {
+                        if let IoResponse::SendMessage(msg2) = io_resp2 {
+                            process_single_message(msg2, &mut state, &config);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    assert_eq!(state.polls.len(), 1, "Should have created 1 poll");
+    assert!(
+        state.polls.contains_key(&3045599),
+        "Should contain poll_id 3045599"
+    );
+
+    let poll = &state.polls[&3045599];
+    assert!(matches!(poll.data.kind, polls::PollKind::GatewayTx));
+    assert_eq!(
+        poll.data.tx,
+        "4f68a703e0bba0a0f6fd9d484d8b3674584c6ca54eef68ff4e733f3774bbd814"
+    );
+    assert_eq!(poll.data.chain, "polygon");
+
+    let vote_height = 24678402;
+    let vote_io_responses = common::mock_process_io_command(
+        IoCommand::FetchBlock(Height::Specific(vote_height)),
+        "new_protocol",
+        vote_height,
+    );
+
+    for io_resp in vote_io_responses {
+        if let IoResponse::SendMessage(msg) = io_resp {
+            process_single_message(msg, &mut state, &config);
+        }
+    }
+
+    let poll = &state.polls[&3045599];
+    assert!(
+        !poll.votes.is_empty(),
+        "Poll 3045599 should have received votes from block 24678402"
+    );
+}
+
+#[test]
+fn test_new_protocol_bech32_sender_matches_config() {
+    let config =
+        common::create_test_config_with_broadcasters(vec![axelar_monitor::config::Broadcaster {
+            name: "chorus".to_string(),
+            address: "be932e6de9f924116df2afc1829506ac853956e3".to_string(),
+        }]);
+    let mut state = ProcessingState::new(&config);
+
+    // Block 24678401: creates poll 3045599 on Polygon
+    let height = 24678401;
+    let io_responses = common::mock_process_io_command(
+        IoCommand::FetchBlock(Height::Specific(height)),
+        "new_protocol",
+        height,
+    );
+    for io_resp in io_responses {
+        if let IoResponse::SendMessage(msg) = io_resp {
+            let proc_responses = process_single_message(msg, &mut state, &config);
+            for proc_resp in proc_responses {
+                if let ProcessingResponse::SendIoCommand(cmd) = proc_resp {
+                    for io_resp2 in common::mock_process_io_command(cmd, "new_protocol", height) {
+                        if let IoResponse::SendMessage(msg2) = io_resp2 {
+                            process_single_message(msg2, &mut state, &config);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(state.polls.contains_key(&3045599));
+
+    // Block 24678404: chorus vote on poll 3045599
+    // chorus = axelar1h6fjum0flyjpzm0j4lqc99gx4jznj4hr8yj0g5
+    let vote_height = 24678404;
+    let vote_io = common::mock_process_io_command(
+        IoCommand::FetchBlock(Height::Specific(vote_height)),
+        "new_protocol",
+        vote_height,
+    );
+    for io_resp in vote_io {
+        if let IoResponse::SendMessage(msg) = io_resp {
+            process_single_message(msg, &mut state, &config);
+        }
+    }
+
+    let poll = &state.polls[&3045599];
+    let chorus_votes: Vec<_> = poll
+        .votes
+        .iter()
+        .filter(|v| v.sender_id == "be932e6de9f924116df2afc1829506ac853956e3")
+        .collect();
+    assert!(
+        !chorus_votes.is_empty(),
+        "Chorus bech32 sender should decode to matching hex address"
+    );
+}
+
+#[test]
 fn test_empty_block_no_polls_no_votes() {
     let config = common::create_test_config();
     let mut state = ProcessingState::new(&config);
