@@ -128,8 +128,11 @@ fn test_with_http_server() {
 
     // Fetch block though specific and /latest endpoints
     for h in vec![Height::Specific(height), Height::Latest] {
-        let io_responses =
-            process_single_io_command(IoCommand::FetchBlock(h), &config.rpc_url, &config.lcd_url);
+        let io_responses = process_single_io_command(
+            IoCommand::FetchBlock(h, 0),
+            &config.rpc_url,
+            &config.lcd_url,
+        );
 
         for io_resp in io_responses {
             if let IoResponse::SendMessage(msg) = io_resp {

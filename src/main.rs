@@ -119,7 +119,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(height) = single_block {
             println!("Starting to fetch from height {height}");
             feeder_tx
-                .send(IoCommand::FetchBlock(Height::Specific(height)))
+                .send(IoCommand::FetchBlock(Height::Specific(height), 0))
                 .unwrap();
         }
         loop {
