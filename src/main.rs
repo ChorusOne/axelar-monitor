@@ -1,5 +1,5 @@
 use axelar_monitor::{
-    Config, Height, IoCommand, IoResponse, ProcessingMessage, ProcessingResponse, ProcessingState,
+    Config, IoCommand, IoResponse, ProcessingMessage, ProcessingResponse, ProcessingState,
     process_single_io_command, process_single_message,
 };
 use log::info;
@@ -106,22 +106,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     cmd_tx.send(IoCommand::FetchChainList).unwrap();
 
-    let args: Vec<String> = std::env::args().collect();
-    let single_block = if args.len() > 1 {
-        args[1].parse::<u64>().ok()
-    } else {
-        None
-    };
-
     thread::spawn(move || {
-        // start at specific height
         feeder_tx.send(IoCommand::FetchHead).unwrap();
-        if let Some(height) = single_block {
-            println!("Starting to fetch from height {height}");
-            feeder_tx
-                .send(IoCommand::FetchBlock(Height::Specific(height), 0))
-                .unwrap();
-        }
         loop {
             thread::sleep(Duration::from_secs(poll_interval));
             feeder_tx.send(IoCommand::FetchHead).unwrap();
