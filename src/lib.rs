@@ -113,10 +113,6 @@ pub enum ProcessingMessage {
     QueryMetrics(mpsc::Sender<MetricsSnapshot>),
 }
 
-pub enum IoResponse {
-    SendMessage(ProcessingMessage),
-}
-
 pub struct ProcessingState {
     pub chain_height: u64,
     pub fetch_error_count: u64,
@@ -504,58 +500,58 @@ pub fn process_single_message(
     }
 }
 
-pub fn process_single_io_command(cmd: IoCommand, rpc_url: &str, lcd_url: &str) -> Vec<IoResponse> {
+pub fn process_single_io_command(
+    cmd: IoCommand,
+    rpc_url: &str,
+    lcd_url: &str,
+) -> Vec<ProcessingMessage> {
     match cmd {
         IoCommand::FetchBlock(height, retries) => match get_block(rpc_url, height) {
-            Ok((block, height)) => vec![IoResponse::SendMessage(ProcessingMessage::IoResult(
-                IoResult::Block(height, block),
-            ))],
-            Err(e) => vec![IoResponse::SendMessage(ProcessingMessage::IoResult(
-                IoResult::FetchError {
-                    height,
-                    retries,
-                    error: e.to_string(),
-                },
-            ))],
+            Ok((block, height)) => {
+                vec![ProcessingMessage::IoResult(IoResult::Block(height, block))]
+            }
+            Err(e) => vec![ProcessingMessage::IoResult(IoResult::FetchError {
+                height,
+                retries,
+                error: e.to_string(),
+            })],
         },
         IoCommand::FetchBlockResults(height, polls, retries) => {
             match get_block_results(lcd_url, height) {
-                Ok(block_results) => vec![IoResponse::SendMessage(ProcessingMessage::IoResult(
-                    IoResult::BlockResults(height, block_results, polls),
+                Ok(block_results) => vec![ProcessingMessage::IoResult(IoResult::BlockResults(
+                    height,
+                    block_results,
+                    polls,
                 ))],
-                Err(e) => vec![IoResponse::SendMessage(ProcessingMessage::IoResult(
+                Err(e) => vec![ProcessingMessage::IoResult(
                     IoResult::FetchBlockResultsError {
                         height,
                         polls,
                         retries,
                         error: e.to_string(),
                     },
-                ))],
+                )],
             }
         }
         IoCommand::FetchChainList => match get_chain_list(rpc_url) {
             Ok(chains) => {
                 info!("fetched chain list: {} chains", chains.len());
-                vec![IoResponse::SendMessage(ProcessingMessage::IoResult(
-                    IoResult::ChainList(chains),
-                ))]
+                vec![ProcessingMessage::IoResult(IoResult::ChainList(chains))]
             }
-            Err(e) => vec![IoResponse::SendMessage(ProcessingMessage::IoResult(
-                IoResult::FetchChainListError(e.to_string()),
+            Err(e) => vec![ProcessingMessage::IoResult(IoResult::FetchChainListError(
+                e.to_string(),
             ))],
         },
         IoCommand::FetchHead => match get_head(rpc_url) {
-            Ok(height) => vec![IoResponse::SendMessage(ProcessingMessage::IoResult(
-                IoResult::Head(height),
-            ))],
+            Ok(height) => vec![ProcessingMessage::IoResult(IoResult::Head(height))],
             Err(e) => {
                 error!("Failed to fetch chain head: {}", e);
                 vec![]
             }
         },
         IoCommand::FetchChainParams(chain) => match get_chain_params(rpc_url, &chain) {
-            Ok(params) => vec![IoResponse::SendMessage(ProcessingMessage::IoResult(
-                IoResult::ChainParams(params.into()),
+            Ok(params) => vec![ProcessingMessage::IoResult(IoResult::ChainParams(
+                params.into(),
             ))],
             Err(e) => {
                 error!("Failed to fetch chain params for {}: {}", chain, e);
