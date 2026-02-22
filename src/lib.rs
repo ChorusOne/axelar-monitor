@@ -21,10 +21,12 @@ pub enum Height {
     Specific(u64),
 }
 
+pub const MAX_FETCH_RETRIES: u32 = 3;
+
 #[derive(Debug)]
 pub enum IoCommand {
-    FetchBlock(Height),
-    FetchBlockResults(u64, Vec<PollData>),
+    FetchBlock(Height, u32),
+    FetchBlockResults(u64, Vec<PollData>, u32),
     FetchChainList,
     FetchChainParams(String),
     FetchHead,
@@ -35,7 +37,17 @@ pub enum IoCommand {
 pub enum IoResult {
     Block(u64, Block),
     BlockResults(u64, rpc::BlockResults, Vec<PollData>),
-    FetchError(Height, String),
+    FetchError {
+        height: Height,
+        retries: u32,
+        error: String,
+    },
+    FetchBlockResultsError {
+        height: u64,
+        polls: Vec<PollData>,
+        retries: u32,
+        error: String,
+    },
     ChainList(Vec<String>),
     ChainParams(config::ChainParams),
     Head(u64),
@@ -237,17 +249,71 @@ pub fn process_single_message(
 ) -> Vec<ProcessingResponse> {
     match msg {
         ProcessingMessage::IoResult(result) => match result {
-            IoResult::FetchError(h, e) => {
+            IoResult::FetchError {
+                height,
+                retries,
+                error,
+            } => {
                 state.fetch_error_count += 1;
-                error!("Error fetching at height {:?}: {}", h, e);
-                match h {
-                    Height::Specific(height) => {
-                        warn!("Retrying block {}", height);
-                        vec![ProcessingResponse::SendIoCommand(IoCommand::FetchBlock(
-                            Height::Specific(height),
-                        ))]
+                error!("Error fetching at height {:?}: {}", height, error);
+                match height {
+                    Height::Specific(h) => {
+                        if retries < MAX_FETCH_RETRIES {
+                            warn!(
+                                "Retrying block {} (attempt {}/{})",
+                                h,
+                                retries + 1,
+                                MAX_FETCH_RETRIES
+                            );
+                            vec![ProcessingResponse::SendIoCommand(IoCommand::FetchBlock(
+                                Height::Specific(h),
+                                retries + 1,
+                            ))]
+                        } else {
+                            error!("Block {} failed {} times, skipping", h, retries + 1);
+                            state.last_processed_height = h;
+                            if state.chain_tip > h {
+                                vec![ProcessingResponse::SendIoCommand(IoCommand::FetchBlock(
+                                    Height::Specific(h + 1),
+                                    0,
+                                ))]
+                            } else {
+                                vec![]
+                            }
+                        }
                     }
                     Height::Latest => vec![],
+                }
+            }
+            IoResult::FetchBlockResultsError {
+                height,
+                polls,
+                retries,
+                error,
+            } => {
+                state.fetch_error_count += 1;
+                error!(
+                    "Error fetching block results at height {}: {}",
+                    height, error
+                );
+                if retries < MAX_FETCH_RETRIES {
+                    warn!(
+                        "Retrying block results {} (attempt {}/{})",
+                        height,
+                        retries + 1,
+                        MAX_FETCH_RETRIES
+                    );
+                    vec![ProcessingResponse::SendIoCommand(
+                        IoCommand::FetchBlockResults(height, polls, retries + 1),
+                    )]
+                } else {
+                    error!(
+                        "Block results {} failed {} times, dropping {} polls",
+                        height,
+                        retries + 1,
+                        polls.len()
+                    );
+                    vec![]
                 }
             }
             IoResult::ChainList(chains) => {
@@ -301,7 +367,7 @@ pub fn process_single_message(
                                 height
                             );
                             responses.push(ProcessingResponse::SendIoCommand(
-                                IoCommand::FetchBlockResults(height, data.poll_creations),
+                                IoCommand::FetchBlockResults(height, data.poll_creations, 0),
                             ));
                         }
 
@@ -324,7 +390,7 @@ pub fn process_single_message(
                                 next_height
                             );
                             responses.push(ProcessingResponse::SendIoCommand(
-                                IoCommand::FetchBlock(Height::Specific(next_height)),
+                                IoCommand::FetchBlock(Height::Specific(next_height), 0),
                             ));
                         }
 
@@ -337,6 +403,7 @@ pub fn process_single_message(
                             warn!("Skipping bad block, fetching {}", next_height);
                             vec![ProcessingResponse::SendIoCommand(IoCommand::FetchBlock(
                                 Height::Specific(next_height),
+                                0,
                             ))]
                         } else {
                             vec![]
@@ -407,6 +474,7 @@ pub fn process_single_message(
                     state.last_processed_height = height - 1;
                     vec![ProcessingResponse::SendIoCommand(IoCommand::FetchBlock(
                         Height::Specific(height),
+                        0,
                     ))]
                 } else if height > old_tip && old_tip == state.last_processed_height {
                     let next_height = state.last_processed_height + 1;
@@ -416,6 +484,7 @@ pub fn process_single_message(
                     );
                     vec![ProcessingResponse::SendIoCommand(IoCommand::FetchBlock(
                         Height::Specific(next_height),
+                        0,
                     ))]
                 } else {
                     debug!("Chain tip updated to {}", height);
@@ -441,23 +510,33 @@ pub fn process_single_message(
 
 pub fn process_single_io_command(cmd: IoCommand, rpc_url: &str, lcd_url: &str) -> Vec<IoResponse> {
     match cmd {
-        IoCommand::FetchBlock(height) => match get_block(rpc_url, height) {
+        IoCommand::FetchBlock(height, retries) => match get_block(rpc_url, height) {
             Ok((block, height)) => vec![IoResponse::SendMessage(ProcessingMessage::IoResult(
                 IoResult::Block(height, block),
             ))],
             Err(e) => vec![IoResponse::SendMessage(ProcessingMessage::IoResult(
-                IoResult::FetchError(height, e.to_string()),
+                IoResult::FetchError {
+                    height,
+                    retries,
+                    error: e.to_string(),
+                },
             ))],
         },
-        IoCommand::FetchBlockResults(height, pc) => match get_block_results(lcd_url, height) {
-            Ok(block_results) => vec![IoResponse::SendMessage(ProcessingMessage::IoResult(
-                IoResult::BlockResults(height, block_results, pc),
-            ))],
-            Err(e) => {
-                error!("Failed to fetch block results for height {}: {}", height, e);
-                vec![]
+        IoCommand::FetchBlockResults(height, polls, retries) => {
+            match get_block_results(lcd_url, height) {
+                Ok(block_results) => vec![IoResponse::SendMessage(ProcessingMessage::IoResult(
+                    IoResult::BlockResults(height, block_results, polls),
+                ))],
+                Err(e) => vec![IoResponse::SendMessage(ProcessingMessage::IoResult(
+                    IoResult::FetchBlockResultsError {
+                        height,
+                        polls,
+                        retries,
+                        error: e.to_string(),
+                    },
+                ))],
             }
-        },
+        }
         IoCommand::FetchChainList => match get_chain_list(rpc_url) {
             Ok(chains) => {
                 info!("fetched chain list: {} chains", chains.len());
@@ -857,14 +936,17 @@ mod tests {
         responses.iter().any(|r| {
             matches!(
                 r,
-                ProcessingResponse::SendIoCommand(IoCommand::FetchBlock(_))
+                ProcessingResponse::SendIoCommand(IoCommand::FetchBlock(_, _))
             )
         })
     }
 
     fn fetch_block_height(responses: &[ProcessingResponse]) -> Option<u64> {
         responses.iter().find_map(|r| {
-            if let ProcessingResponse::SendIoCommand(IoCommand::FetchBlock(Height::Specific(h))) = r
+            if let ProcessingResponse::SendIoCommand(IoCommand::FetchBlock(
+                Height::Specific(h),
+                _,
+            )) = r
             {
                 Some(*h)
             } else {
@@ -892,7 +974,11 @@ mod tests {
         let responses = send(
             &mut state,
             &config,
-            IoResult::FetchError(Height::Specific(100), "connection refused".into()),
+            IoResult::FetchError {
+                height: Height::Specific(100),
+                retries: 0,
+                error: "connection refused".into(),
+            },
         );
         assert_eq!(
             fetch_block_height(&responses),
@@ -905,32 +991,100 @@ mod tests {
         );
     }
 
-    // FetchBlockResults failure silently loses poll data.
-    // The block was already processed and the chain moved on, so there's no
-    // clean way to replay.
     #[test]
-    fn test_block_results_io_error_silently_drops_polls() {
+    fn test_block_results_retries_then_drops_polls() {
         let config = empty_config();
         let mut state = ProcessingState::new(&config);
 
-        state.last_processed_height = 99;
-        state.chain_tip = 101;
-
-        let poll_data = vec![PollData {
+        let polls = vec![PollData {
             kind: PollKind::GatewayTx,
             chain: "ethereum".to_string(),
             tx: "abc123".to_string(),
             expiry_height: 200,
         }];
 
-        let io_responses = process_single_io_command(
-            IoCommand::FetchBlockResults(100, poll_data),
-            "http://127.0.0.1:1",
-            "http://127.0.0.1:1",
+        for retry in 0..MAX_FETCH_RETRIES {
+            let responses = send(
+                &mut state,
+                &config,
+                IoResult::FetchBlockResultsError {
+                    height: 100,
+                    polls: polls.clone(),
+                    retries: retry,
+                    error: "connection refused".into(),
+                },
+            );
+            assert!(
+                responses.iter().any(|r| matches!(
+                    r,
+                    ProcessingResponse::SendIoCommand(IoCommand::FetchBlockResults(100, _, _))
+                )),
+                "retry {} should issue another FetchBlockResults",
+                retry
+            );
+        }
+
+        let responses = send(
+            &mut state,
+            &config,
+            IoResult::FetchBlockResultsError {
+                height: 100,
+                polls: polls.clone(),
+                retries: MAX_FETCH_RETRIES,
+                error: "connection refused".into(),
+            },
         );
-        assert!(
-            io_responses.is_empty(),
-            "FetchBlockResults error returns no IoResponse: poll data is lost"
+        assert!(responses.is_empty(), "after max retries, polls are dropped");
+        assert_eq!(state.fetch_error_count, MAX_FETCH_RETRIES as u64 + 1);
+    }
+
+    #[test]
+    fn test_fetch_error_retries_then_skips() {
+        let config = empty_config();
+        let mut state = ProcessingState::new(&config);
+
+        send(&mut state, &config, IoResult::Head(110));
+        send(&mut state, &config, IoResult::Head(115));
+
+        for retry in 0..MAX_FETCH_RETRIES {
+            let responses = send(
+                &mut state,
+                &config,
+                IoResult::FetchError {
+                    height: Height::Specific(110),
+                    retries: retry,
+                    error: "rpc error".into(),
+                },
+            );
+            assert_eq!(
+                fetch_block_height(&responses),
+                Some(110),
+                "retry {} should retry the same block",
+                retry
+            );
+            assert_eq!(
+                state.last_processed_height, 109,
+                "height must not advance on retry"
+            );
+        }
+
+        let responses = send(
+            &mut state,
+            &config,
+            IoResult::FetchError {
+                height: Height::Specific(110),
+                retries: MAX_FETCH_RETRIES,
+                error: "rpc error".into(),
+            },
+        );
+        assert_eq!(
+            fetch_block_height(&responses),
+            Some(111),
+            "after max retries, should skip to the next block"
+        );
+        assert_eq!(
+            state.last_processed_height, 110,
+            "skipped block advances last_processed_height"
         );
     }
 

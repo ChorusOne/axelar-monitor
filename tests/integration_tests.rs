@@ -12,7 +12,7 @@ fn test_full_poll_flow_deposit() {
     let height = 20383480;
 
     let io_responses = common::mock_process_io_command(
-        IoCommand::FetchBlock(Height::Specific(height)),
+        IoCommand::FetchBlock(Height::Specific(height), 0),
         "deposit",
         height,
     );
@@ -70,7 +70,7 @@ fn test_full_poll_flow_transfer_key() {
     let height = 20404088;
 
     let io_responses = common::mock_process_io_command(
-        IoCommand::FetchBlock(Height::Specific(height)),
+        IoCommand::FetchBlock(Height::Specific(height), 0),
         "transfer_key",
         height,
     );
@@ -134,7 +134,7 @@ fn test_full_poll_flow_gateway_txs_batch() {
     let height = 20413624;
 
     let io_responses = common::mock_process_io_command(
-        IoCommand::FetchBlock(Height::Specific(height)),
+        IoCommand::FetchBlock(Height::Specific(height), 0),
         "gateway_txs",
         height,
     );
@@ -179,7 +179,7 @@ fn test_full_poll_flow_confirm_token() {
     let height = 20133866;
 
     let io_responses = common::mock_process_io_command(
-        IoCommand::FetchBlock(Height::Specific(height)),
+        IoCommand::FetchBlock(Height::Specific(height), 0),
         "confirm_token",
         height,
     );
@@ -233,7 +233,7 @@ fn test_full_poll_flow_confirm_gateway_tx_started() {
     let height = 20414583;
 
     let io_responses = common::mock_process_io_command(
-        IoCommand::FetchBlock(Height::Specific(height)),
+        IoCommand::FetchBlock(Height::Specific(height), 0),
         "confirm_gateway_tx",
         height,
     );
@@ -287,7 +287,7 @@ fn test_new_protocol_plaintext_events() {
     let height = 24678401;
 
     let io_responses = common::mock_process_io_command(
-        IoCommand::FetchBlock(Height::Specific(height)),
+        IoCommand::FetchBlock(Height::Specific(height), 0),
         "new_protocol",
         height,
     );
@@ -335,7 +335,7 @@ fn test_new_protocol_plaintext_events() {
 
     let vote_height = 24678402;
     let vote_io_responses = common::mock_process_io_command(
-        IoCommand::FetchBlock(Height::Specific(vote_height)),
+        IoCommand::FetchBlock(Height::Specific(vote_height), 0),
         "new_protocol",
         vote_height,
     );
@@ -365,7 +365,7 @@ fn test_new_protocol_bech32_sender_matches_config() {
     // Block 24678401: creates poll 3045599 on Polygon
     let height = 24678401;
     let io_responses = common::mock_process_io_command(
-        IoCommand::FetchBlock(Height::Specific(height)),
+        IoCommand::FetchBlock(Height::Specific(height), 0),
         "new_protocol",
         height,
     );
@@ -389,7 +389,7 @@ fn test_new_protocol_bech32_sender_matches_config() {
     // chorus = axelar1h6fjum0flyjpzm0j4lqc99gx4jznj4hr8yj0g5
     let vote_height = 24678404;
     let vote_io = common::mock_process_io_command(
-        IoCommand::FetchBlock(Height::Specific(vote_height)),
+        IoCommand::FetchBlock(Height::Specific(vote_height), 0),
         "new_protocol",
         vote_height,
     );
@@ -418,7 +418,7 @@ fn test_empty_block_no_polls_no_votes() {
     let height = 20432569;
 
     let io_responses = common::mock_process_io_command(
-        IoCommand::FetchBlock(Height::Specific(height)),
+        IoCommand::FetchBlock(Height::Specific(height), 0),
         "empty_block",
         height,
     );
