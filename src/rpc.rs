@@ -45,12 +45,12 @@ pub struct ChainParamsJson {
     pub voting_grace_period: String,
 }
 
-impl Into<crate::config::ChainParams> for ChainParamsJson {
-    fn into(self) -> crate::config::ChainParams {
+impl From<ChainParamsJson> for crate::config::ChainParams {
+    fn from(j: ChainParamsJson) -> Self {
         crate::config::ChainParams {
-            name: self.chain,
-            revote_locking_period: self.revote_locking_period.parse().unwrap(),
-            voting_grace_period: self.voting_grace_period.parse().unwrap(),
+            name: j.chain,
+            revote_locking_period: j.revote_locking_period.parse().unwrap(),
+            voting_grace_period: j.voting_grace_period.parse().unwrap(),
         }
     }
 }

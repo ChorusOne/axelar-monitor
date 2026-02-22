@@ -17,27 +17,23 @@ fn test_full_poll_flow_deposit() {
         height,
     );
 
-    for io_resp in io_responses {
-        if let IoResponse::SendMessage(msg) = io_resp {
-            let proc_responses = process_single_message(msg, &mut state, &config);
+    for IoResponse::SendMessage(msg) in io_responses {
+        let proc_responses = process_single_message(msg, &mut state, &config);
 
-            assert!(
-                proc_responses.iter().any(|r| matches!(
-                    r,
-                    ProcessingResponse::SendIoCommand(IoCommand::FetchBlockResults(..))
-                )),
-                "Should request BlockResults"
-            );
+        assert!(
+            proc_responses.iter().any(|r| matches!(
+                r,
+                ProcessingResponse::SendIoCommand(IoCommand::FetchBlockResults(..))
+            )),
+            "Should request BlockResults"
+        );
 
-            for proc_resp in proc_responses {
-                if let ProcessingResponse::SendIoCommand(cmd) = proc_resp {
-                    let io_responses2 = common::mock_process_io_command(cmd, "deposit", height);
+        for proc_resp in proc_responses {
+            if let ProcessingResponse::SendIoCommand(cmd) = proc_resp {
+                let io_responses2 = common::mock_process_io_command(cmd, "deposit", height);
 
-                    for io_resp2 in io_responses2 {
-                        if let IoResponse::SendMessage(msg2) = io_resp2 {
-                            process_single_message(msg2, &mut state, &config);
-                        }
-                    }
+                for IoResponse::SendMessage(msg2) in io_responses2 {
+                    process_single_message(msg2, &mut state, &config);
                 }
             }
         }
@@ -75,20 +71,15 @@ fn test_full_poll_flow_transfer_key() {
         height,
     );
 
-    for io_resp in io_responses {
-        if let IoResponse::SendMessage(msg) = io_resp {
-            let proc_responses = process_single_message(msg, &mut state, &config);
+    for IoResponse::SendMessage(msg) in io_responses {
+        let proc_responses = process_single_message(msg, &mut state, &config);
 
-            for proc_resp in proc_responses {
-                if let ProcessingResponse::SendIoCommand(cmd) = proc_resp {
-                    let io_responses2 =
-                        common::mock_process_io_command(cmd, "transfer_key", height);
+        for proc_resp in proc_responses {
+            if let ProcessingResponse::SendIoCommand(cmd) = proc_resp {
+                let io_responses2 = common::mock_process_io_command(cmd, "transfer_key", height);
 
-                    for io_resp2 in io_responses2 {
-                        if let IoResponse::SendMessage(msg2) = io_resp2 {
-                            process_single_message(msg2, &mut state, &config);
-                        }
-                    }
+                for IoResponse::SendMessage(msg2) in io_responses2 {
+                    process_single_message(msg2, &mut state, &config);
                 }
             }
         }
@@ -139,19 +130,15 @@ fn test_full_poll_flow_gateway_txs_batch() {
         height,
     );
 
-    for io_resp in io_responses {
-        if let IoResponse::SendMessage(msg) = io_resp {
-            let proc_responses = process_single_message(msg, &mut state, &config);
+    for IoResponse::SendMessage(msg) in io_responses {
+        let proc_responses = process_single_message(msg, &mut state, &config);
 
-            for proc_resp in proc_responses {
-                if let ProcessingResponse::SendIoCommand(cmd) = proc_resp {
-                    let io_responses2 = common::mock_process_io_command(cmd, "gateway_txs", height);
+        for proc_resp in proc_responses {
+            if let ProcessingResponse::SendIoCommand(cmd) = proc_resp {
+                let io_responses2 = common::mock_process_io_command(cmd, "gateway_txs", height);
 
-                    for io_resp2 in io_responses2 {
-                        if let IoResponse::SendMessage(msg2) = io_resp2 {
-                            process_single_message(msg2, &mut state, &config);
-                        }
-                    }
+                for IoResponse::SendMessage(msg2) in io_responses2 {
+                    process_single_message(msg2, &mut state, &config);
                 }
             }
         }
@@ -184,28 +171,23 @@ fn test_full_poll_flow_confirm_token() {
         height,
     );
 
-    for io_resp in io_responses {
-        if let IoResponse::SendMessage(msg) = io_resp {
-            let proc_responses = process_single_message(msg, &mut state, &config);
+    for IoResponse::SendMessage(msg) in io_responses {
+        let proc_responses = process_single_message(msg, &mut state, &config);
 
-            assert!(
-                proc_responses.iter().any(|r| matches!(
-                    r,
-                    ProcessingResponse::SendIoCommand(IoCommand::FetchBlockResults(..))
-                )),
-                "Should request BlockResults"
-            );
+        assert!(
+            proc_responses.iter().any(|r| matches!(
+                r,
+                ProcessingResponse::SendIoCommand(IoCommand::FetchBlockResults(..))
+            )),
+            "Should request BlockResults"
+        );
 
-            for proc_resp in proc_responses {
-                if let ProcessingResponse::SendIoCommand(cmd) = proc_resp {
-                    let io_responses2 =
-                        common::mock_process_io_command(cmd, "confirm_token", height);
+        for proc_resp in proc_responses {
+            if let ProcessingResponse::SendIoCommand(cmd) = proc_resp {
+                let io_responses2 = common::mock_process_io_command(cmd, "confirm_token", height);
 
-                    for io_resp2 in io_responses2 {
-                        if let IoResponse::SendMessage(msg2) = io_resp2 {
-                            process_single_message(msg2, &mut state, &config);
-                        }
-                    }
+                for IoResponse::SendMessage(msg2) in io_responses2 {
+                    process_single_message(msg2, &mut state, &config);
                 }
             }
         }
@@ -238,28 +220,24 @@ fn test_full_poll_flow_confirm_gateway_tx_started() {
         height,
     );
 
-    for io_resp in io_responses {
-        if let IoResponse::SendMessage(msg) = io_resp {
-            let proc_responses = process_single_message(msg, &mut state, &config);
+    for IoResponse::SendMessage(msg) in io_responses {
+        let proc_responses = process_single_message(msg, &mut state, &config);
 
-            assert!(
-                proc_responses.iter().any(|r| matches!(
-                    r,
-                    ProcessingResponse::SendIoCommand(IoCommand::FetchBlockResults(..))
-                )),
-                "Should request BlockResults"
-            );
+        assert!(
+            proc_responses.iter().any(|r| matches!(
+                r,
+                ProcessingResponse::SendIoCommand(IoCommand::FetchBlockResults(..))
+            )),
+            "Should request BlockResults"
+        );
 
-            for proc_resp in proc_responses {
-                if let ProcessingResponse::SendIoCommand(cmd) = proc_resp {
-                    let io_responses2 =
-                        common::mock_process_io_command(cmd, "confirm_gateway_tx", height);
+        for proc_resp in proc_responses {
+            if let ProcessingResponse::SendIoCommand(cmd) = proc_resp {
+                let io_responses2 =
+                    common::mock_process_io_command(cmd, "confirm_gateway_tx", height);
 
-                    for io_resp2 in io_responses2 {
-                        if let IoResponse::SendMessage(msg2) = io_resp2 {
-                            process_single_message(msg2, &mut state, &config);
-                        }
-                    }
+                for IoResponse::SendMessage(msg2) in io_responses2 {
+                    process_single_message(msg2, &mut state, &config);
                 }
             }
         }
@@ -292,28 +270,23 @@ fn test_new_protocol_plaintext_events() {
         height,
     );
 
-    for io_resp in io_responses {
-        if let IoResponse::SendMessage(msg) = io_resp {
-            let proc_responses = process_single_message(msg, &mut state, &config);
+    for IoResponse::SendMessage(msg) in io_responses {
+        let proc_responses = process_single_message(msg, &mut state, &config);
 
-            assert!(
-                proc_responses.iter().any(|r| matches!(
-                    r,
-                    ProcessingResponse::SendIoCommand(IoCommand::FetchBlockResults(..))
-                )),
-                "Should request BlockResults for poll creation"
-            );
+        assert!(
+            proc_responses.iter().any(|r| matches!(
+                r,
+                ProcessingResponse::SendIoCommand(IoCommand::FetchBlockResults(..))
+            )),
+            "Should request BlockResults for poll creation"
+        );
 
-            for proc_resp in proc_responses {
-                if let ProcessingResponse::SendIoCommand(cmd) = proc_resp {
-                    let io_responses2 =
-                        common::mock_process_io_command(cmd, "new_protocol", height);
+        for proc_resp in proc_responses {
+            if let ProcessingResponse::SendIoCommand(cmd) = proc_resp {
+                let io_responses2 = common::mock_process_io_command(cmd, "new_protocol", height);
 
-                    for io_resp2 in io_responses2 {
-                        if let IoResponse::SendMessage(msg2) = io_resp2 {
-                            process_single_message(msg2, &mut state, &config);
-                        }
-                    }
+                for IoResponse::SendMessage(msg2) in io_responses2 {
+                    process_single_message(msg2, &mut state, &config);
                 }
             }
         }
@@ -340,10 +313,8 @@ fn test_new_protocol_plaintext_events() {
         vote_height,
     );
 
-    for io_resp in vote_io_responses {
-        if let IoResponse::SendMessage(msg) = io_resp {
-            process_single_message(msg, &mut state, &config);
-        }
+    for IoResponse::SendMessage(msg) in vote_io_responses {
+        process_single_message(msg, &mut state, &config);
     }
 
     let poll = &state.polls[&3045599];
@@ -369,16 +340,14 @@ fn test_new_protocol_bech32_sender_matches_config() {
         "new_protocol",
         height,
     );
-    for io_resp in io_responses {
-        if let IoResponse::SendMessage(msg) = io_resp {
-            let proc_responses = process_single_message(msg, &mut state, &config);
-            for proc_resp in proc_responses {
-                if let ProcessingResponse::SendIoCommand(cmd) = proc_resp {
-                    for io_resp2 in common::mock_process_io_command(cmd, "new_protocol", height) {
-                        if let IoResponse::SendMessage(msg2) = io_resp2 {
-                            process_single_message(msg2, &mut state, &config);
-                        }
-                    }
+    for IoResponse::SendMessage(msg) in io_responses {
+        let proc_responses = process_single_message(msg, &mut state, &config);
+        for proc_resp in proc_responses {
+            if let ProcessingResponse::SendIoCommand(cmd) = proc_resp {
+                for IoResponse::SendMessage(msg2) in
+                    common::mock_process_io_command(cmd, "new_protocol", height)
+                {
+                    process_single_message(msg2, &mut state, &config);
                 }
             }
         }
@@ -393,10 +362,8 @@ fn test_new_protocol_bech32_sender_matches_config() {
         "new_protocol",
         vote_height,
     );
-    for io_resp in vote_io {
-        if let IoResponse::SendMessage(msg) = io_resp {
-            process_single_message(msg, &mut state, &config);
-        }
+    for IoResponse::SendMessage(msg) in vote_io {
+        process_single_message(msg, &mut state, &config);
     }
 
     let poll = &state.polls[&3045599];
@@ -423,19 +390,15 @@ fn test_empty_block_no_polls_no_votes() {
         height,
     );
 
-    for io_resp in io_responses {
-        if let IoResponse::SendMessage(msg) = io_resp {
-            let proc_responses = process_single_message(msg, &mut state, &config);
+    for IoResponse::SendMessage(msg) in io_responses {
+        let proc_responses = process_single_message(msg, &mut state, &config);
 
-            for proc_resp in proc_responses {
-                if let ProcessingResponse::SendIoCommand(cmd) = proc_resp {
-                    let io_responses2 = common::mock_process_io_command(cmd, "empty_block", height);
+        for proc_resp in proc_responses {
+            if let ProcessingResponse::SendIoCommand(cmd) = proc_resp {
+                let io_responses2 = common::mock_process_io_command(cmd, "empty_block", height);
 
-                    for io_resp2 in io_responses2 {
-                        if let IoResponse::SendMessage(msg2) = io_resp2 {
-                            process_single_message(msg2, &mut state, &config);
-                        }
-                    }
+                for IoResponse::SendMessage(msg2) in io_responses2 {
+                    process_single_message(msg2, &mut state, &config);
                 }
             }
         }

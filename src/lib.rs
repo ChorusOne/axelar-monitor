@@ -30,8 +30,6 @@ pub enum IoCommand {
     FetchChainList,
     FetchChainParams(String),
     FetchHead,
-    #[allow(dead_code)]
-    Shutdown,
 }
 
 pub enum IoResult {
@@ -113,12 +111,10 @@ pub struct MetricsSnapshot {
 pub enum ProcessingMessage {
     IoResult(IoResult),
     QueryMetrics(mpsc::Sender<MetricsSnapshot>),
-    Shutdown,
 }
 
 pub enum IoResponse {
     SendMessage(ProcessingMessage),
-    Shutdown,
 }
 
 pub struct ProcessingState {
@@ -240,7 +236,6 @@ fn analyze_poll_completion(
 pub enum ProcessingResponse {
     SendIoCommand(IoCommand),
     SendMetricsSnapshot(mpsc::Sender<MetricsSnapshot>, MetricsSnapshot),
-    Shutdown,
 }
 
 pub fn process_single_message(
@@ -382,7 +377,7 @@ pub fn process_single_message(
                 let expiring_poll_ids: Vec<_> = state
                     .polls
                     .iter()
-                    .filter(|(_, poll)| poll.data.expiry_height <= height as u64)
+                    .filter(|(_, poll)| poll.data.expiry_height <= height)
                     .map(|(id, _)| *id)
                     .collect();
 
@@ -392,9 +387,7 @@ pub fn process_single_message(
                     }
                 }
 
-                state
-                    .polls
-                    .retain(|_, v| v.data.expiry_height > height as u64);
+                state.polls.retain(|_, v| v.data.expiry_height > height);
                 info!("open polls after pruning {}", state.polls.len());
 
                 if state.chain_tip > state.last_processed_height {
@@ -508,7 +501,6 @@ pub fn process_single_message(
                 snapshot,
             )]
         }
-        ProcessingMessage::Shutdown => vec![ProcessingResponse::Shutdown],
     }
 }
 
@@ -561,7 +553,6 @@ pub fn process_single_io_command(cmd: IoCommand, rpc_url: &str, lcd_url: &str) -
                 vec![]
             }
         },
-        IoCommand::Shutdown => vec![IoResponse::Shutdown],
         IoCommand::FetchChainParams(chain) => match get_chain_params(rpc_url, &chain) {
             Ok(params) => vec![IoResponse::SendMessage(ProcessingMessage::IoResult(
                 IoResult::ChainParams(params.into()),
