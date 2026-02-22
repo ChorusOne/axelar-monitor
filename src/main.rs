@@ -1,5 +1,5 @@
 use axelar_monitor::{
-    Config, IoCommand, IoResponse, ProcessingMessage, ProcessingResponse, ProcessingState,
+    Config, IoCommand, ProcessingMessage, ProcessingResponse, ProcessingState,
     process_single_io_command, process_single_message,
 };
 use log::info;
@@ -18,9 +18,7 @@ fn io_thread_loop(
     loop {
         match cmd_rx.recv() {
             Ok(cmd) => {
-                for IoResponse::SendMessage(msg) in
-                    process_single_io_command(cmd, &rpc_url, &lcd_url)
-                {
+                for msg in process_single_io_command(cmd, &rpc_url, &lcd_url) {
                     msg_tx.send(msg).unwrap();
                 }
             }

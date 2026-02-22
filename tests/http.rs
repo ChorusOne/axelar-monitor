@@ -1,6 +1,6 @@
 use axelar_monitor::{
-    Config, Height, IoCommand, IoResponse, ProcessingResponse, ProcessingState,
-    process_single_io_command, process_single_message,
+    Config, Height, IoCommand, ProcessingResponse, ProcessingState, process_single_io_command,
+    process_single_message,
 };
 
 fn handle_request(request: &tiny_http::Request) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
@@ -89,7 +89,7 @@ fn test_with_http_server() {
     // Fetch head
     let io_responses =
         process_single_io_command(IoCommand::FetchHead, &config.rpc_url, &config.lcd_url);
-    for IoResponse::SendMessage(msg) in io_responses {
+    for msg in io_responses {
         process_single_message(msg, &mut state, &config);
     }
     assert_eq!(state.chain_tip, height, "Should have set chain tip");
@@ -97,14 +97,14 @@ fn test_with_http_server() {
     // Fetch chain list
     let io_responses =
         process_single_io_command(IoCommand::FetchChainList, &config.rpc_url, &config.lcd_url);
-    for IoResponse::SendMessage(msg) in io_responses {
+    for msg in io_responses {
         let mut proc_responses = process_single_message(msg, &mut state, &config);
 
         assert_eq!(proc_responses.len(), 1);
         let resp = proc_responses.pop().unwrap();
         if let ProcessingResponse::SendIoCommand(cmd) = resp {
             let io_responses2 = process_single_io_command(cmd, &config.rpc_url, &config.lcd_url);
-            for IoResponse::SendMessage(msg2) in io_responses2 {
+            for msg2 in io_responses2 {
                 process_single_message(msg2, &mut state, &config);
             }
         }
@@ -127,7 +127,7 @@ fn test_with_http_server() {
             &config.lcd_url,
         );
 
-        for IoResponse::SendMessage(msg) in io_responses {
+        for msg in io_responses {
             let proc_responses = process_single_message(msg, &mut state, &config);
 
             assert!(
@@ -143,7 +143,7 @@ fn test_with_http_server() {
                     let io_responses2 =
                         process_single_io_command(cmd, &config.rpc_url, &config.lcd_url);
 
-                    for IoResponse::SendMessage(msg2) in io_responses2 {
+                    for msg2 in io_responses2 {
                         process_single_message(msg2, &mut state, &config);
                     }
                 }
