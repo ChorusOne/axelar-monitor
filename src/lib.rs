@@ -49,6 +49,7 @@ pub enum IoResult {
         error: String,
     },
     ChainList(Vec<String>),
+    FetchChainListError(String),
     ChainParams(config::ChainParams),
     Head(u64),
 }
@@ -316,6 +317,11 @@ pub fn process_single_message(
                     vec![]
                 }
             }
+            IoResult::FetchChainListError(error) => {
+                state.fetch_error_count += 1;
+                error!("Failed to fetch chain list: {}, retrying", error);
+                vec![ProcessingResponse::SendIoCommand(IoCommand::FetchChainList)]
+            }
             IoResult::ChainList(chains) => {
                 info!(
                     "Chain list received, fetching params for {} chains",
@@ -544,10 +550,9 @@ pub fn process_single_io_command(cmd: IoCommand, rpc_url: &str, lcd_url: &str) -
                     IoResult::ChainList(chains),
                 ))]
             }
-            Err(e) => {
-                error!("Failed to fetch chain list: {}", e);
-                vec![]
-            }
+            Err(e) => vec![IoResponse::SendMessage(ProcessingMessage::IoResult(
+                IoResult::FetchChainListError(e.to_string()),
+            ))],
         },
         IoCommand::FetchHead => match get_head(rpc_url) {
             Ok(height) => vec![IoResponse::SendMessage(ProcessingMessage::IoResult(
