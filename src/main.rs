@@ -18,23 +18,10 @@ fn io_thread_loop(
     loop {
         match cmd_rx.recv() {
             Ok(cmd) => {
-                let responses = process_single_io_command(cmd, &rpc_url, &lcd_url);
-                let mut should_shutdown = false;
-
-                for response in responses {
-                    match response {
-                        IoResponse::SendMessage(msg) => {
-                            msg_tx.send(msg).unwrap();
-                        }
-                        IoResponse::Shutdown => {
-                            msg_tx.send(ProcessingMessage::Shutdown).unwrap();
-                            should_shutdown = true;
-                        }
-                    }
-                }
-
-                if should_shutdown {
-                    break;
+                for IoResponse::SendMessage(msg) in
+                    process_single_io_command(cmd, &rpc_url, &lcd_url)
+                {
+                    msg_tx.send(msg).unwrap();
                 }
             }
             Err(_) => break,
@@ -51,27 +38,17 @@ fn processing_loop(
     let mut state = ProcessingState::new(&config);
 
     loop {
-        match msg_rx.recv()? {
-            msg => {
-                let responses = process_single_message(msg, &mut state, &config);
-                let mut should_shutdown = false;
-
-                for response in responses {
-                    match response {
-                        ProcessingResponse::SendIoCommand(cmd) => {
-                            cmd_tx.send(cmd).unwrap();
-                        }
-                        ProcessingResponse::SendMetricsSnapshot(response_tx, snapshot) => {
-                            let _ = response_tx.send(snapshot);
-                        }
-                        ProcessingResponse::Shutdown => {
-                            should_shutdown = true;
-                        }
-                    }
+        let msg = match msg_rx.recv() {
+            Ok(msg) => msg,
+            Err(_) => break,
+        };
+        for response in process_single_message(msg, &mut state, &config) {
+            match response {
+                ProcessingResponse::SendIoCommand(cmd) => {
+                    cmd_tx.send(cmd).unwrap();
                 }
-
-                if should_shutdown {
-                    break;
+                ProcessingResponse::SendMetricsSnapshot(response_tx, snapshot) => {
+                    let _ = response_tx.send(snapshot);
                 }
             }
         }

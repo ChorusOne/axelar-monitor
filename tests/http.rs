@@ -89,30 +89,23 @@ fn test_with_http_server() {
     // Fetch head
     let io_responses =
         process_single_io_command(IoCommand::FetchHead, &config.rpc_url, &config.lcd_url);
-    for io_resp in io_responses {
-        if let IoResponse::SendMessage(msg) = io_resp {
-            process_single_message(msg, &mut state, &config);
-        }
+    for IoResponse::SendMessage(msg) in io_responses {
+        process_single_message(msg, &mut state, &config);
     }
     assert_eq!(state.chain_tip, height, "Should have set chain tip");
 
     // Fetch chain list
     let io_responses =
         process_single_io_command(IoCommand::FetchChainList, &config.rpc_url, &config.lcd_url);
-    for io_resp in io_responses {
-        if let IoResponse::SendMessage(msg) = io_resp {
-            let mut proc_responses = process_single_message(msg, &mut state, &config);
+    for IoResponse::SendMessage(msg) in io_responses {
+        let mut proc_responses = process_single_message(msg, &mut state, &config);
 
-            assert_eq!(proc_responses.len(), 1);
-            let resp = proc_responses.pop().unwrap();
-            if let ProcessingResponse::SendIoCommand(cmd) = resp {
-                let io_responses2 =
-                    process_single_io_command(cmd, &config.rpc_url, &config.lcd_url);
-                for io_resp2 in io_responses2 {
-                    if let IoResponse::SendMessage(msg2) = io_resp2 {
-                        process_single_message(msg2, &mut state, &config);
-                    }
-                }
+        assert_eq!(proc_responses.len(), 1);
+        let resp = proc_responses.pop().unwrap();
+        if let ProcessingResponse::SendIoCommand(cmd) = resp {
+            let io_responses2 = process_single_io_command(cmd, &config.rpc_url, &config.lcd_url);
+            for IoResponse::SendMessage(msg2) in io_responses2 {
+                process_single_message(msg2, &mut state, &config);
             }
         }
     }
@@ -134,28 +127,24 @@ fn test_with_http_server() {
             &config.lcd_url,
         );
 
-        for io_resp in io_responses {
-            if let IoResponse::SendMessage(msg) = io_resp {
-                let proc_responses = process_single_message(msg, &mut state, &config);
+        for IoResponse::SendMessage(msg) in io_responses {
+            let proc_responses = process_single_message(msg, &mut state, &config);
 
-                assert!(
-                    proc_responses.iter().any(|r| matches!(
-                        r,
-                        ProcessingResponse::SendIoCommand(IoCommand::FetchBlockResults(..))
-                    )),
-                    "Should request BlockResults"
-                );
+            assert!(
+                proc_responses.iter().any(|r| matches!(
+                    r,
+                    ProcessingResponse::SendIoCommand(IoCommand::FetchBlockResults(..))
+                )),
+                "Should request BlockResults"
+            );
 
-                for proc_resp in proc_responses {
-                    if let ProcessingResponse::SendIoCommand(cmd) = proc_resp {
-                        let io_responses2 =
-                            process_single_io_command(cmd, &config.rpc_url, &config.lcd_url);
+            for proc_resp in proc_responses {
+                if let ProcessingResponse::SendIoCommand(cmd) = proc_resp {
+                    let io_responses2 =
+                        process_single_io_command(cmd, &config.rpc_url, &config.lcd_url);
 
-                        for io_resp2 in io_responses2 {
-                            if let IoResponse::SendMessage(msg2) = io_resp2 {
-                                process_single_message(msg2, &mut state, &config);
-                            }
-                        }
+                    for IoResponse::SendMessage(msg2) in io_responses2 {
+                        process_single_message(msg2, &mut state, &config);
                     }
                 }
             }

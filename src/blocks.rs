@@ -53,10 +53,7 @@ pub struct DecodedVote {
 }
 
 pub fn extract_decoded_votes(txs: &[TxBody]) -> Vec<DecodedVote> {
-    txs.iter()
-        .map(|tx| extract_decoded_votes_from_tx(tx))
-        .flatten()
-        .collect()
+    txs.iter().flat_map(extract_decoded_votes_from_tx).collect()
 }
 
 fn extract_decoded_votes_from_tx(tx: &TxBody) -> Vec<DecodedVote> {
@@ -87,7 +84,7 @@ pub fn extract_vote_requests(tx: &TxBody) -> Vec<VoteRequest> {
     let refund_messages = extract_refund_messages(tx);
     refund_messages
         .iter()
-        .filter_map(|rm| extract_vote_request(rm))
+        .filter_map(extract_vote_request)
         .collect()
 }
 
@@ -135,7 +132,7 @@ pub enum RawPollRequests {
 }
 pub fn extract_raw_poll_requests(txs: &[TxBody]) -> Vec<RawPollRequests> {
     txs.iter()
-        .map(|tx| {
+        .flat_map(|tx| {
             tx.messages
                 .iter()
                 .filter_map(|msg| match msg.type_url.as_str() {
@@ -165,7 +162,6 @@ pub fn extract_raw_poll_requests(txs: &[TxBody]) -> Vec<RawPollRequests> {
                 })
                 .collect::<Vec<RawPollRequests>>()
         })
-        .flatten()
         .collect()
 }
 
@@ -195,7 +191,7 @@ fn event_name(evt: &Option<event::Event>) -> &str {
 
 pub fn get_votes_from_txs(txs: &[TxBody]) -> Vec<PollVote> {
     let mut ret: Vec<_> = vec![];
-    for vote in extract_decoded_votes(&txs) {
+    for vote in extract_decoded_votes(txs) {
         let sender_id = vote.sender.clone();
         if let Some(vote_events) = &vote.vote_events {
             if vote_events.events.is_empty() {
@@ -213,7 +209,7 @@ pub fn get_votes_from_txs(txs: &[TxBody]) -> Vec<PollVote> {
                     let v = PollVote {
                         poll_id: vote.poll_id,
                         chain: vote_events.chain.clone(),
-                        tx_id: tx_id,
+                        tx_id,
                         sender_id: sender_id.clone(),
                         payload_hash: match &event.event {
                             Some(Event::ContractCall(c)) => Some(hex::encode(&c.payload_hash)),
@@ -242,7 +238,7 @@ pub fn get_votes_from_txs(txs: &[TxBody]) -> Vec<PollVote> {
                 }
             }
         } else {
-            println!("no events??");
+            log::warn!("vote on poll {} has no events", vote.poll_id);
             let v = PollVote {
                 poll_id: vote.poll_id,
                 chain: String::new(),
@@ -272,11 +268,11 @@ pub fn get_txs(block: &Block) -> Result<Vec<TxBody>, Box<dyn std::error::Error>>
                     }
                 }
                 Err(e) => {
-                    println!("Tx {}: Failed to parse protobuf: {}", idx, e);
+                    log::warn!("Tx {}: Failed to parse protobuf: {}", idx, e);
                 }
             },
             Err(e) => {
-                println!("Tx {}: Failed to decode base64: {}", idx, e);
+                log::warn!("Tx {}: Failed to decode base64: {}", idx, e);
             }
         }
     }
@@ -299,7 +295,7 @@ pub fn process_block(
     let raw_reqs = extract_raw_poll_requests(&txs);
     let poll_requests: Vec<PollRequest> = raw_reqs
         .iter()
-        .map(|r| match r {
+        .flat_map(|r| match r {
             RawPollRequests::GatewayTx(g) => vec![PollRequest {
                 kind: PollKind::GatewayTx,
                 tx: hex::encode(&g.tx_id),
@@ -310,7 +306,7 @@ pub fn process_block(
                 .iter()
                 .map(|tx_id| PollRequest {
                     kind: PollKind::GatewayTx,
-                    tx: hex::encode(&tx_id),
+                    tx: hex::encode(tx_id),
                     chain: g.chain.clone(),
                 })
                 .collect(),
@@ -332,7 +328,6 @@ pub fn process_block(
                 chain: t.chain.clone(),
             }],
         })
-        .flatten()
         .collect();
 
     let mut poll_creations = Vec::new();

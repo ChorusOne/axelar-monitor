@@ -64,13 +64,13 @@ struct PollParticipantsJson {
     // Ignore participants field - we don't need it
 }
 
-fn decode_attribute_key(attr: &crate::rpc::EventAttribute) -> Option<String> {
+fn decode_attribute_key(attr: &crate::rpc::EventAttribute) -> String {
     if let Ok(key_bytes) = general_purpose::STANDARD.decode(&attr.key) {
         if let Ok(s) = String::from_utf8(key_bytes) {
-            return Some(s);
+            return s;
         }
     }
-    Some(attr.key.clone())
+    attr.key.clone()
 }
 
 fn decode_attribute_value<T: serde::de::DeserializeOwned>(
@@ -90,9 +90,7 @@ fn decode_attribute_value<T: serde::de::DeserializeOwned>(
 fn extract_poll_mappings_from_json(event: &TendermintEvent) -> Vec<PollEvent> {
     let mut poll_mappings = Vec::new();
     for attr in &event.attributes {
-        if let Some(key) = decode_attribute_key(attr)
-            && key == "poll_mappings"
-        {
+        if decode_attribute_key(attr) == "poll_mappings" {
             if let Some(mappings) = decode_attribute_value::<Vec<PollMappingJson>>(attr) {
                 for mapping in mappings {
                     if let Ok(poll_id) = mapping.poll_id.parse::<u64>() {
@@ -124,18 +122,16 @@ fn extract_poll_event_from_attributes(
     let mut poll_id: Option<u64> = None;
 
     for attr in &event.attributes {
-        if let Some(key) = decode_attribute_key(attr) {
-            match key.as_str() {
-                "tx_id" => {
-                    tx_id = decode_attribute_value::<Vec<u8>>(attr);
-                }
-                "participants" => {
-                    if let Some(json) = decode_attribute_value::<PollParticipantsJson>(attr) {
-                        poll_id = json.poll_id.parse::<u64>().ok();
-                    }
-                }
-                _ => {}
+        match decode_attribute_key(attr).as_str() {
+            "tx_id" => {
+                tx_id = decode_attribute_value::<Vec<u8>>(attr);
             }
+            "participants" => {
+                if let Some(json) = decode_attribute_value::<PollParticipantsJson>(attr) {
+                    poll_id = json.poll_id.parse::<u64>().ok();
+                }
+            }
+            _ => {}
         }
     }
 
