@@ -13,7 +13,6 @@ use config::ChainParams;
 use log::{debug, error, info, warn};
 use polls::{Poll, PollData};
 use std::collections::BTreeMap;
-use std::sync::mpsc;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Height {
@@ -108,11 +107,6 @@ pub struct MetricsSnapshot {
     pub last_processed_height: u64,
 }
 
-pub enum ProcessingMessage {
-    IoResult(IoResult),
-    QueryMetrics(mpsc::Sender<MetricsSnapshot>),
-}
-
 pub struct ProcessingState {
     pub chain_height: u64,
     pub fetch_error_count: u64,
@@ -156,6 +150,15 @@ impl ProcessingState {
             chain_tip: 0,
             last_processed_height: 0,
             vote_results,
+        }
+    }
+
+    pub fn metrics_snapshot(&self) -> MetricsSnapshot {
+        MetricsSnapshot {
+            chain_height: self.chain_height,
+            fetch_error_count: self.fetch_error_count,
+            broadcaster_votes: self.vote_results.clone(),
+            last_processed_height: self.last_processed_height,
         }
     }
 }
@@ -229,330 +232,279 @@ fn analyze_poll_completion(
     }
 }
 
-pub enum ProcessingResponse {
-    SendIoCommand(IoCommand),
-    SendMetricsSnapshot(mpsc::Sender<MetricsSnapshot>, MetricsSnapshot),
-}
-
 pub fn process_single_message(
-    msg: ProcessingMessage,
+    result: IoResult,
     state: &mut ProcessingState,
     config: &Config,
-) -> Vec<ProcessingResponse> {
-    match msg {
-        ProcessingMessage::IoResult(result) => match result {
-            IoResult::FetchError {
-                height,
-                retries,
-                error,
-            } => {
-                state.fetch_error_count += 1;
-                error!("Error fetching at height {:?}: {}", height, error);
-                match height {
-                    Height::Specific(h) => {
-                        if retries < MAX_FETCH_RETRIES {
-                            warn!(
-                                "Retrying block {} (attempt {}/{})",
-                                h,
-                                retries + 1,
-                                MAX_FETCH_RETRIES
-                            );
-                            vec![ProcessingResponse::SendIoCommand(IoCommand::FetchBlock(
-                                Height::Specific(h),
-                                retries + 1,
-                            ))]
+) -> Vec<IoCommand> {
+    match result {
+        IoResult::FetchError {
+            height,
+            retries,
+            error,
+        } => {
+            state.fetch_error_count += 1;
+            error!("Error fetching at height {:?}: {}", height, error);
+            match height {
+                Height::Specific(h) => {
+                    if retries < MAX_FETCH_RETRIES {
+                        warn!(
+                            "Retrying block {} (attempt {}/{})",
+                            h,
+                            retries + 1,
+                            MAX_FETCH_RETRIES
+                        );
+                        vec![IoCommand::FetchBlock(Height::Specific(h), retries + 1)]
+                    } else {
+                        error!("Block {} failed {} times, skipping", h, retries + 1);
+                        state.last_processed_height = h;
+                        if state.chain_tip > h {
+                            vec![IoCommand::FetchBlock(Height::Specific(h + 1), 0)]
                         } else {
-                            error!("Block {} failed {} times, skipping", h, retries + 1);
-                            state.last_processed_height = h;
-                            if state.chain_tip > h {
-                                vec![ProcessingResponse::SendIoCommand(IoCommand::FetchBlock(
-                                    Height::Specific(h + 1),
-                                    0,
-                                ))]
-                            } else {
-                                vec![]
-                            }
+                            vec![]
                         }
                     }
-                    Height::Latest => vec![],
                 }
+                Height::Latest => vec![],
             }
-            IoResult::FetchBlockResultsError {
-                height,
-                polls,
-                retries,
-                error,
-            } => {
-                state.fetch_error_count += 1;
+        }
+        IoResult::FetchBlockResultsError {
+            height,
+            polls,
+            retries,
+            error,
+        } => {
+            state.fetch_error_count += 1;
+            error!(
+                "Error fetching block results at height {}: {}",
+                height, error
+            );
+            if retries < MAX_FETCH_RETRIES {
+                warn!(
+                    "Retrying block results {} (attempt {}/{})",
+                    height,
+                    retries + 1,
+                    MAX_FETCH_RETRIES
+                );
+                vec![IoCommand::FetchBlockResults(height, polls, retries + 1)]
+            } else {
                 error!(
-                    "Error fetching block results at height {}: {}",
-                    height, error
+                    "Block results {} failed {} times, dropping {} polls",
+                    height,
+                    retries + 1,
+                    polls.len()
                 );
-                if retries < MAX_FETCH_RETRIES {
-                    warn!(
-                        "Retrying block results {} (attempt {}/{})",
-                        height,
-                        retries + 1,
-                        MAX_FETCH_RETRIES
-                    );
-                    vec![ProcessingResponse::SendIoCommand(
-                        IoCommand::FetchBlockResults(height, polls, retries + 1),
-                    )]
-                } else {
-                    error!(
-                        "Block results {} failed {} times, dropping {} polls",
-                        height,
-                        retries + 1,
-                        polls.len()
-                    );
-                    vec![]
+                vec![]
+            }
+        }
+        IoResult::FetchChainListError(error) => {
+            state.fetch_error_count += 1;
+            error!("Failed to fetch chain list: {}, retrying", error);
+            vec![IoCommand::FetchChainList]
+        }
+        IoResult::ChainList(chains) => {
+            info!(
+                "Chain list received, fetching params for {} chains",
+                chains.len()
+            );
+            let mut responses = Vec::new();
+            for chain in chains {
+                if !state.chain_params.contains_key(&chain) {
+                    responses.push(IoCommand::FetchChainParams(chain));
                 }
             }
-            IoResult::FetchChainListError(error) => {
-                state.fetch_error_count += 1;
-                error!("Failed to fetch chain list: {}, retrying", error);
-                vec![ProcessingResponse::SendIoCommand(IoCommand::FetchChainList)]
-            }
-            IoResult::ChainList(chains) => {
-                info!(
-                    "Chain list received, fetching params for {} chains",
-                    chains.len()
-                );
-                let mut responses = Vec::new();
-                for chain in chains {
-                    if !state.chain_params.contains_key(&chain) {
-                        responses.push(ProcessingResponse::SendIoCommand(
-                            IoCommand::FetchChainParams(chain),
+            responses
+        }
+        IoResult::Block(height, block) => {
+            state.chain_height = std::cmp::max(state.chain_height, height);
+            state.last_processed_height = height;
+            info!(
+                "got block height is {}, chain height is {}",
+                height, state.chain_height
+            );
+
+            let mut responses = Vec::new();
+            let block_failed = match blocks::process_block(&block, &state.chain_params, height) {
+                Ok(data) => {
+                    if !data.poll_creations.is_empty() {
+                        info!(
+                            "Storing {} poll_creations for height {}, fetching block_results",
+                            data.poll_creations.len(),
+                            height
+                        );
+                        responses.push(IoCommand::FetchBlockResults(
+                            height,
+                            data.poll_creations,
+                            0,
                         ));
                     }
-                }
-                responses
-            }
-            IoResult::Block(height, block) => {
-                state.chain_height = std::cmp::max(state.chain_height, height);
-                state.last_processed_height = height;
-                info!(
-                    "got block height is {}, chain height is {}",
-                    height, state.chain_height
-                );
 
-                let mut responses = Vec::new();
-                let block_failed = match blocks::process_block(&block, &state.chain_params, height)
-                {
-                    Ok(data) => {
-                        if !data.poll_creations.is_empty() {
-                            info!(
-                                "Storing {} poll_creations for height {}, fetching block_results",
-                                data.poll_creations.len(),
-                                height
+                    for vote in data.votes {
+                        if let Some(poll) = state.polls.get_mut(&vote.poll_id) {
+                            debug!("vote: {:?}", vote);
+                            poll.votes.push(vote);
+                        } else {
+                            warn!(
+                                "Got vote on poll_id={} and we don't know about it. It's fine if this program just started (~90s)",
+                                vote.poll_id
                             );
-                            responses.push(ProcessingResponse::SendIoCommand(
-                                IoCommand::FetchBlockResults(height, data.poll_creations, 0),
-                            ));
                         }
-
-                        for vote in data.votes {
-                            if let Some(poll) = state.polls.get_mut(&vote.poll_id) {
-                                debug!("vote: {:?}", vote);
-                                poll.votes.push(vote);
-                            } else {
-                                warn!(
-                                    "Got vote on poll_id={} and we don't know about it. It's fine if this program just started (~90s)",
-                                    vote.poll_id
-                                );
-                            }
-                        }
-                        false
                     }
-                    Err(e) => {
-                        error!("Failed to process block at height {}: {}", height, e);
-                        true
-                    }
-                };
-
-                let expiring_poll_ids: Vec<_> = state
-                    .polls
-                    .iter()
-                    .filter(|(_, poll)| poll.data.expiry_height <= height)
-                    .map(|(id, _)| *id)
-                    .collect();
-
-                for poll_id in expiring_poll_ids {
-                    if let Some(poll) = state.polls.get(&poll_id) {
-                        analyze_poll_completion(poll, config, &mut state.vote_results);
-                    }
+                    false
                 }
-
-                state.polls.retain(|_, v| v.data.expiry_height > height);
-                info!("open polls after pruning {}", state.polls.len());
-
-                if state.chain_tip > state.last_processed_height {
-                    let next_height = state.last_processed_height + 1;
-                    if block_failed {
-                        warn!("Skipping bad block, fetching {}", next_height);
-                    } else {
-                        info!(
-                            "Still behind chain tip, immediately fetching block {}",
-                            next_height
-                        );
-                    }
-                    responses.push(ProcessingResponse::SendIoCommand(IoCommand::FetchBlock(
-                        Height::Specific(next_height),
-                        0,
-                    )));
+                Err(e) => {
+                    error!("Failed to process block at height {}: {}", height, e);
+                    true
                 }
+            };
 
-                responses
+            let expiring_poll_ids: Vec<_> = state
+                .polls
+                .iter()
+                .filter(|(_, poll)| poll.data.expiry_height <= height)
+                .map(|(id, _)| *id)
+                .collect();
+
+            for poll_id in expiring_poll_ids {
+                if let Some(poll) = state.polls.get(&poll_id) {
+                    analyze_poll_completion(poll, config, &mut state.vote_results);
+                }
             }
-            IoResult::BlockResults(height, block_results, poll_creations) => {
-                debug!(
-                    "Processing {} poll_creations with block_results for height {}",
-                    poll_creations.len(),
-                    height
-                );
 
-                let poll_events = polls::extract_all_poll_events(&block_results);
-                let tx_to_poll_ids: BTreeMap<String, u64> = poll_events
-                    .iter()
-                    .map(|pe| (hex::encode(&pe.tx_id), pe.poll_id))
-                    .collect();
+            state.polls.retain(|_, v| v.data.expiry_height > height);
+            debug!("open polls after pruning {}", state.polls.len());
 
-                for creation in poll_creations {
-                    if let Some(poll_id) = tx_to_poll_ids.get(&creation.tx) {
-                        let poll = Poll {
-                            poll_id: *poll_id,
-                            data: creation,
-                            votes: vec![],
-                        };
-                        info!("Created poll at {height}; poll_id: {poll_id}");
-                        debug!("Created poll at {height} = {poll:?}");
-                        state.polls.insert(poll.poll_id, poll);
-                    } else {
-                        warn!(
-                            "Got poll creation for tx_id={} but no matching event",
-                            creation.tx
-                        );
-                    }
-                }
-                vec![]
-            }
-            IoResult::ChainParams(chain) => {
-                state
-                    .chain_params
-                    .insert(chain.name.to_lowercase(), chain.clone());
-
-                for broadcaster in &config.broadcaster {
-                    for result_type in [
-                        VoteResultType::Agreed,
-                        VoteResultType::Disagreed,
-                        VoteResultType::Missed,
-                    ] {
-                        let key = VoteResult {
-                            broadcaster: broadcaster.name.clone(),
-                            chain: chain.name.to_lowercase(),
-                            result: result_type,
-                        };
-                        state.vote_results.entry(key).or_insert(0);
-                    }
-                }
-
-                vec![]
-            }
-            IoResult::Head(height) => {
-                let old_tip = state.chain_tip;
-                state.chain_tip = height;
-
-                if state.last_processed_height == 0 {
-                    info!("Initializing: starting from current chain tip {}", height);
-                    state.last_processed_height = height - 1;
-                    vec![ProcessingResponse::SendIoCommand(IoCommand::FetchBlock(
-                        Height::Specific(height),
-                        0,
-                    ))]
-                } else if height > old_tip && old_tip == state.last_processed_height {
-                    let next_height = state.last_processed_height + 1;
+            if state.chain_tip > state.last_processed_height {
+                let next_height = state.last_processed_height + 1;
+                if block_failed {
+                    warn!("Skipping bad block, fetching {}", next_height);
+                } else {
                     debug!(
-                        "Chain advanced while caught up, fetching block {}",
+                        "Behind chain tip, immediately fetching block {}",
                         next_height
                     );
-                    vec![ProcessingResponse::SendIoCommand(IoCommand::FetchBlock(
-                        Height::Specific(next_height),
-                        0,
-                    ))]
+                }
+                responses.push(IoCommand::FetchBlock(Height::Specific(next_height), 0));
+            }
+
+            responses
+        }
+        IoResult::BlockResults(height, block_results, poll_creations) => {
+            debug!(
+                "Processing {} poll_creations with block_results for height {}",
+                poll_creations.len(),
+                height
+            );
+
+            let poll_events = polls::extract_all_poll_events(&block_results);
+            let tx_to_poll_ids: BTreeMap<String, u64> = poll_events
+                .iter()
+                .map(|pe| (hex::encode(&pe.tx_id), pe.poll_id))
+                .collect();
+
+            for creation in poll_creations {
+                if let Some(poll_id) = tx_to_poll_ids.get(&creation.tx) {
+                    let poll = Poll {
+                        poll_id: *poll_id,
+                        data: creation,
+                        votes: vec![],
+                    };
+                    info!("Created poll at {height}; poll_id: {poll_id}");
+                    debug!("Created poll at {height} = {poll:?}");
+                    state.polls.insert(poll.poll_id, poll);
                 } else {
-                    debug!("Chain tip updated to {}", height);
-                    vec![]
+                    warn!(
+                        "Got poll creation for tx_id={} but no matching event",
+                        creation.tx
+                    );
                 }
             }
-        },
-        ProcessingMessage::QueryMetrics(response_tx) => {
-            let snapshot = MetricsSnapshot {
-                chain_height: state.chain_height,
-                fetch_error_count: state.fetch_error_count,
-                broadcaster_votes: state.vote_results.clone(),
-                last_processed_height: state.last_processed_height,
-            };
-            vec![ProcessingResponse::SendMetricsSnapshot(
-                response_tx,
-                snapshot,
-            )]
+            vec![]
+        }
+        IoResult::ChainParams(chain) => {
+            state
+                .chain_params
+                .insert(chain.name.to_lowercase(), chain.clone());
+
+            for broadcaster in &config.broadcaster {
+                for result_type in [
+                    VoteResultType::Agreed,
+                    VoteResultType::Disagreed,
+                    VoteResultType::Missed,
+                ] {
+                    let key = VoteResult {
+                        broadcaster: broadcaster.name.clone(),
+                        chain: chain.name.to_lowercase(),
+                        result: result_type,
+                    };
+                    state.vote_results.entry(key).or_insert(0);
+                }
+            }
+
+            vec![]
+        }
+        IoResult::Head(height) => {
+            let old_tip = state.chain_tip;
+            state.chain_tip = height;
+
+            if state.last_processed_height == 0 {
+                info!("Initializing: starting from current chain tip {}", height);
+                state.last_processed_height = height - 1;
+                vec![IoCommand::FetchBlock(Height::Specific(height), 0)]
+            } else if height > old_tip && old_tip == state.last_processed_height {
+                let next_height = state.last_processed_height + 1;
+                debug!(
+                    "Chain advanced while caught up, fetching block {}",
+                    next_height
+                );
+                vec![IoCommand::FetchBlock(Height::Specific(next_height), 0)]
+            } else {
+                debug!("Chain tip updated to {}", height);
+                vec![]
+            }
         }
     }
 }
 
-pub fn process_single_io_command(
-    cmd: IoCommand,
-    rpc_url: &str,
-    lcd_url: &str,
-) -> Vec<ProcessingMessage> {
+pub fn process_single_io_command(cmd: IoCommand, rpc_url: &str, lcd_url: &str) -> Vec<IoResult> {
     match cmd {
         IoCommand::FetchBlock(height, retries) => match get_block(rpc_url, height) {
-            Ok((block, height)) => {
-                vec![ProcessingMessage::IoResult(IoResult::Block(height, block))]
-            }
-            Err(e) => vec![ProcessingMessage::IoResult(IoResult::FetchError {
+            Ok((block, height)) => vec![IoResult::Block(height, block)],
+            Err(e) => vec![IoResult::FetchError {
                 height,
                 retries,
                 error: e.to_string(),
-            })],
+            }],
         },
         IoCommand::FetchBlockResults(height, polls, retries) => {
             match get_block_results(lcd_url, height) {
-                Ok(block_results) => vec![ProcessingMessage::IoResult(IoResult::BlockResults(
+                Ok(block_results) => {
+                    vec![IoResult::BlockResults(height, block_results, polls)]
+                }
+                Err(e) => vec![IoResult::FetchBlockResultsError {
                     height,
-                    block_results,
                     polls,
-                ))],
-                Err(e) => vec![ProcessingMessage::IoResult(
-                    IoResult::FetchBlockResultsError {
-                        height,
-                        polls,
-                        retries,
-                        error: e.to_string(),
-                    },
-                )],
+                    retries,
+                    error: e.to_string(),
+                }],
             }
         }
         IoCommand::FetchChainList => match get_chain_list(rpc_url) {
             Ok(chains) => {
                 info!("fetched chain list: {} chains", chains.len());
-                vec![ProcessingMessage::IoResult(IoResult::ChainList(chains))]
+                vec![IoResult::ChainList(chains)]
             }
-            Err(e) => vec![ProcessingMessage::IoResult(IoResult::FetchChainListError(
-                e.to_string(),
-            ))],
+            Err(e) => vec![IoResult::FetchChainListError(e.to_string())],
         },
         IoCommand::FetchHead => match get_head(rpc_url) {
-            Ok(height) => vec![ProcessingMessage::IoResult(IoResult::Head(height))],
+            Ok(height) => vec![IoResult::Head(height)],
             Err(e) => {
                 error!("Failed to fetch chain head: {}", e);
                 vec![]
             }
         },
         IoCommand::FetchChainParams(chain) => match get_chain_params(rpc_url, &chain) {
-            Ok(params) => vec![ProcessingMessage::IoResult(IoResult::ChainParams(
-                params.into(),
-            ))],
+            Ok(params) => vec![IoResult::ChainParams(params.into())],
             Err(e) => {
                 error!("Failed to fetch chain params for {}: {}", chain, e);
                 vec![]
@@ -922,22 +874,14 @@ mod tests {
         }
     }
 
-    fn has_fetch_block(responses: &[ProcessingResponse]) -> bool {
-        responses.iter().any(|r| {
-            matches!(
-                r,
-                ProcessingResponse::SendIoCommand(IoCommand::FetchBlock(_, _))
-            )
-        })
+    fn has_fetch_block(cmds: &[IoCommand]) -> bool {
+        cmds.iter()
+            .any(|r| matches!(r, IoCommand::FetchBlock(_, _)))
     }
 
-    fn fetch_block_height(responses: &[ProcessingResponse]) -> Option<u64> {
-        responses.iter().find_map(|r| {
-            if let ProcessingResponse::SendIoCommand(IoCommand::FetchBlock(
-                Height::Specific(h),
-                _,
-            )) = r
-            {
+    fn fetch_block_height(cmds: &[IoCommand]) -> Option<u64> {
+        cmds.iter().find_map(|r| {
+            if let IoCommand::FetchBlock(Height::Specific(h), _) = r {
                 Some(*h)
             } else {
                 None
@@ -945,12 +889,8 @@ mod tests {
         })
     }
 
-    fn send(
-        state: &mut ProcessingState,
-        config: &Config,
-        result: IoResult,
-    ) -> Vec<ProcessingResponse> {
-        process_single_message(ProcessingMessage::IoResult(result), state, config)
+    fn send(state: &mut ProcessingState, config: &Config, result: IoResult) -> Vec<IoCommand> {
+        process_single_message(result, state, config)
     }
 
     #[test]
@@ -1005,10 +945,9 @@ mod tests {
                 },
             );
             assert!(
-                responses.iter().any(|r| matches!(
-                    r,
-                    ProcessingResponse::SendIoCommand(IoCommand::FetchBlockResults(100, _, _))
-                )),
+                responses
+                    .iter()
+                    .any(|r| matches!(r, IoCommand::FetchBlockResults(100, _, _))),
                 "retry {} should issue another FetchBlockResults",
                 retry
             );

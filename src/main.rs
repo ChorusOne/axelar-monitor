@@ -1,9 +1,9 @@
 use axelar_monitor::{
-    Config, IoCommand, ProcessingMessage, ProcessingResponse, ProcessingState,
-    process_single_io_command, process_single_message,
+    Config, IoCommand, IoResult, ProcessingState, process_single_io_command, process_single_message,
 };
 use log::info;
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -13,13 +13,13 @@ fn io_thread_loop(
     rpc_url: String,
     lcd_url: String,
     cmd_rx: mpsc::Receiver<IoCommand>,
-    msg_tx: mpsc::Sender<ProcessingMessage>,
+    msg_tx: mpsc::Sender<IoResult>,
 ) {
     loop {
         match cmd_rx.recv() {
             Ok(cmd) => {
-                for msg in process_single_io_command(cmd, &rpc_url, &lcd_url) {
-                    msg_tx.send(msg).unwrap();
+                for result in process_single_io_command(cmd, &rpc_url, &lcd_url) {
+                    msg_tx.send(result).unwrap();
                 }
             }
             Err(_) => break,
@@ -29,27 +29,22 @@ fn io_thread_loop(
 }
 
 fn processing_loop(
-    msg_rx: mpsc::Receiver<ProcessingMessage>,
+    msg_rx: mpsc::Receiver<IoResult>,
     cmd_tx: mpsc::Sender<IoCommand>,
     config: Config,
+    metrics: Arc<Mutex<axelar_monitor::MetricsSnapshot>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut state = ProcessingState::new(&config);
 
     loop {
-        let msg = match msg_rx.recv() {
-            Ok(msg) => msg,
+        let result = match msg_rx.recv() {
+            Ok(result) => result,
             Err(_) => break,
         };
-        for response in process_single_message(msg, &mut state, &config) {
-            match response {
-                ProcessingResponse::SendIoCommand(cmd) => {
-                    cmd_tx.send(cmd).unwrap();
-                }
-                ProcessingResponse::SendMetricsSnapshot(response_tx, snapshot) => {
-                    let _ = response_tx.send(snapshot);
-                }
-            }
+        for cmd in process_single_message(result, &mut state, &config) {
+            cmd_tx.send(cmd).unwrap();
         }
+        *metrics.lock().unwrap() = state.metrics_snapshot();
     }
     info!("processing loop done");
     Ok(())
@@ -65,7 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::load("config.toml")?;
 
     let (cmd_tx, cmd_rx) = mpsc::channel::<IoCommand>();
-    let (msg_tx, msg_rx) = mpsc::channel::<ProcessingMessage>();
+    let (msg_tx, msg_rx) = mpsc::channel::<IoResult>();
 
     let rpc_url = config.rpc_url.clone();
     let lcd_url = config.lcd_url.clone();
@@ -88,10 +83,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             feeder_tx.send(IoCommand::FetchHead).unwrap();
         }
     });
-    let msg_tx_metrics = msg_tx.clone();
+
+    let state = ProcessingState::new(&config);
+    let metrics = Arc::new(Mutex::new(state.metrics_snapshot()));
+    let metrics_clone = metrics.clone();
     thread::spawn(move || {
-        metrics::metrics_server_loop(msg_tx_metrics, metrics_port);
+        metrics::metrics_server_loop(metrics_clone, metrics_port);
     });
 
-    processing_loop(msg_rx, cmd_tx, config)
+    processing_loop(msg_rx, cmd_tx, config, metrics)
 }
