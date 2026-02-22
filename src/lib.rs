@@ -345,27 +345,10 @@ pub fn process_single_message(
                     height, state.chain_height
                 );
 
-                let expiring_poll_ids: Vec<_> = state
-                    .polls
-                    .iter()
-                    .filter(|(_, poll)| poll.data.expiry_height <= height as u64)
-                    .map(|(id, _)| *id)
-                    .collect();
-
-                for poll_id in expiring_poll_ids {
-                    if let Some(poll) = state.polls.get(&poll_id) {
-                        analyze_poll_completion(poll, config, &mut state.vote_results);
-                    }
-                }
-
-                state
-                    .polls
-                    .retain(|_, v| v.data.expiry_height > height as u64);
-                info!("open polls after pruning {}", state.polls.len());
-
-                match blocks::process_block(&block, &state.chain_params, height) {
+                let mut responses = Vec::new();
+                let block_failed = match blocks::process_block(&block, &state.chain_params, height)
+                {
                     Ok(data) => {
-                        let mut responses = Vec::new();
                         if !data.poll_creations.is_empty() {
                             info!(
                                 "Storing {} poll_creations for height {}, fetching block_results",
@@ -388,34 +371,49 @@ pub fn process_single_message(
                                 );
                             }
                         }
-
-                        if state.chain_tip > state.last_processed_height {
-                            let next_height = state.last_processed_height + 1;
-                            info!(
-                                "Still behind chain tip, immediately fetching block {}",
-                                next_height
-                            );
-                            responses.push(ProcessingResponse::SendIoCommand(
-                                IoCommand::FetchBlock(Height::Specific(next_height), 0),
-                            ));
-                        }
-
-                        responses
+                        false
                     }
                     Err(e) => {
                         error!("Failed to process block at height {}: {}", height, e);
-                        if state.chain_tip > state.last_processed_height {
-                            let next_height = state.last_processed_height + 1;
-                            warn!("Skipping bad block, fetching {}", next_height);
-                            vec![ProcessingResponse::SendIoCommand(IoCommand::FetchBlock(
-                                Height::Specific(next_height),
-                                0,
-                            ))]
-                        } else {
-                            vec![]
-                        }
+                        true
+                    }
+                };
+
+                let expiring_poll_ids: Vec<_> = state
+                    .polls
+                    .iter()
+                    .filter(|(_, poll)| poll.data.expiry_height <= height as u64)
+                    .map(|(id, _)| *id)
+                    .collect();
+
+                for poll_id in expiring_poll_ids {
+                    if let Some(poll) = state.polls.get(&poll_id) {
+                        analyze_poll_completion(poll, config, &mut state.vote_results);
                     }
                 }
+
+                state
+                    .polls
+                    .retain(|_, v| v.data.expiry_height > height as u64);
+                info!("open polls after pruning {}", state.polls.len());
+
+                if state.chain_tip > state.last_processed_height {
+                    let next_height = state.last_processed_height + 1;
+                    if block_failed {
+                        warn!("Skipping bad block, fetching {}", next_height);
+                    } else {
+                        info!(
+                            "Still behind chain tip, immediately fetching block {}",
+                            next_height
+                        );
+                    }
+                    responses.push(ProcessingResponse::SendIoCommand(IoCommand::FetchBlock(
+                        Height::Specific(next_height),
+                        0,
+                    )));
+                }
+
+                responses
             }
             IoResult::BlockResults(height, block_results, poll_creations) => {
                 debug!(
