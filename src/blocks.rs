@@ -238,15 +238,11 @@ pub fn get_votes_from_txs(txs: &[TxBody]) -> Vec<PollVote> {
                 }
             }
         } else {
-            log::warn!("vote on poll {} has no events", vote.poll_id);
-            let v = PollVote {
-                poll_id: vote.poll_id,
-                chain: String::new(),
-                tx_id: String::new(),
-                sender_id: sender_id.clone(),
-                payload_hash: None,
-            };
-            ret.push(v);
+            log::warn!(
+                "Skipping vote on poll {} from {}: not a VoteEvents message",
+                vote.poll_id,
+                sender_id
+            );
         }
     }
     ret
