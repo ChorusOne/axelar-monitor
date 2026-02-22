@@ -341,6 +341,12 @@ pub fn process_block(
             let revote_period = params.revote_locking_period as u64;
             let expiry_height = height + revote_period;
             poll_creations.push(request.with_expiry(expiry_height));
+        } else {
+            log::warn!(
+                "Dropping poll creation for chain '{}' at height {}: no chain params loaded",
+                request.chain,
+                height
+            );
         }
     }
 
