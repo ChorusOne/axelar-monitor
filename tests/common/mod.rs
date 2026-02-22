@@ -1,4 +1,4 @@
-use axelar_monitor::{Config, Height, IoCommand, ProcessingMessage, blocks, config, rpc};
+use axelar_monitor::{Config, Height, IoCommand, IoResult, blocks, config, rpc};
 
 pub fn load_test_block_from_json(test_type: &str, height: u64) -> blocks::Block {
     let path = format!("test_data/{}/block_{}.json", test_type, height);
@@ -13,23 +13,15 @@ pub fn load_test_block_results_from_json(test_type: &str, height: u64) -> rpc::B
     response.result
 }
 
-pub fn mock_process_io_command(
-    cmd: IoCommand,
-    test_type: &str,
-    _height: u64,
-) -> Vec<ProcessingMessage> {
+pub fn mock_process_io_command(cmd: IoCommand, test_type: &str, _height: u64) -> Vec<IoResult> {
     match cmd {
         IoCommand::FetchBlock(Height::Specific(h), _) => {
             let block = load_test_block_from_json(test_type, h);
-            vec![ProcessingMessage::IoResult(
-                axelar_monitor::IoResult::Block(h, block),
-            )]
+            vec![IoResult::Block(h, block)]
         }
         IoCommand::FetchBlockResults(h, poll_data, _) => {
             let block_results = load_test_block_results_from_json(test_type, h);
-            vec![ProcessingMessage::IoResult(
-                axelar_monitor::IoResult::BlockResults(h, block_results, poll_data),
-            )]
+            vec![IoResult::BlockResults(h, block_results, poll_data)]
         }
         _ => vec![],
     }

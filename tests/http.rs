@@ -1,6 +1,5 @@
 use axelar_monitor::{
-    Config, Height, IoCommand, ProcessingResponse, ProcessingState, process_single_io_command,
-    process_single_message,
+    Config, Height, IoCommand, ProcessingState, process_single_io_command, process_single_message,
 };
 
 fn handle_request(request: &tiny_http::Request) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
@@ -89,24 +88,22 @@ fn test_with_http_server() {
     // Fetch head
     let io_responses =
         process_single_io_command(IoCommand::FetchHead, &config.rpc_url, &config.lcd_url);
-    for msg in io_responses {
-        process_single_message(msg, &mut state, &config);
+    for result in io_responses {
+        process_single_message(result, &mut state, &config);
     }
     assert_eq!(state.chain_tip, height, "Should have set chain tip");
 
     // Fetch chain list
     let io_responses =
         process_single_io_command(IoCommand::FetchChainList, &config.rpc_url, &config.lcd_url);
-    for msg in io_responses {
-        let mut proc_responses = process_single_message(msg, &mut state, &config);
+    for result in io_responses {
+        let mut cmds = process_single_message(result, &mut state, &config);
 
-        assert_eq!(proc_responses.len(), 1);
-        let resp = proc_responses.pop().unwrap();
-        if let ProcessingResponse::SendIoCommand(cmd) = resp {
-            let io_responses2 = process_single_io_command(cmd, &config.rpc_url, &config.lcd_url);
-            for msg2 in io_responses2 {
-                process_single_message(msg2, &mut state, &config);
-            }
+        assert_eq!(cmds.len(), 1);
+        let cmd = cmds.pop().unwrap();
+        let io_responses2 = process_single_io_command(cmd, &config.rpc_url, &config.lcd_url);
+        for result2 in io_responses2 {
+            process_single_message(result2, &mut state, &config);
         }
     }
     assert_eq!(
@@ -127,25 +124,21 @@ fn test_with_http_server() {
             &config.lcd_url,
         );
 
-        for msg in io_responses {
-            let proc_responses = process_single_message(msg, &mut state, &config);
+        for result in io_responses {
+            let cmds = process_single_message(result, &mut state, &config);
 
             assert!(
-                proc_responses.iter().any(|r| matches!(
-                    r,
-                    ProcessingResponse::SendIoCommand(IoCommand::FetchBlockResults(..))
-                )),
+                cmds.iter()
+                    .any(|r| matches!(r, IoCommand::FetchBlockResults(..))),
                 "Should request BlockResults"
             );
 
-            for proc_resp in proc_responses {
-                if let ProcessingResponse::SendIoCommand(cmd) = proc_resp {
-                    let io_responses2 =
-                        process_single_io_command(cmd, &config.rpc_url, &config.lcd_url);
+            for cmd in cmds {
+                let io_responses2 =
+                    process_single_io_command(cmd, &config.rpc_url, &config.lcd_url);
 
-                    for msg2 in io_responses2 {
-                        process_single_message(msg2, &mut state, &config);
-                    }
+                for result2 in io_responses2 {
+                    process_single_message(result2, &mut state, &config);
                 }
             }
         }
