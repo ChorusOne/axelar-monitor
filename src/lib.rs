@@ -21,6 +21,7 @@ pub enum Height {
     Specific(u64),
 }
 
+#[derive(Debug)]
 pub enum IoCommand {
     FetchBlock(Height),
     FetchBlockResults(u64, Vec<PollData>),
@@ -239,7 +240,15 @@ pub fn process_single_message(
             IoResult::FetchError(h, e) => {
                 state.fetch_error_count += 1;
                 error!("Error fetching at height {:?}: {}", h, e);
-                vec![]
+                match h {
+                    Height::Specific(height) => {
+                        warn!("Retrying block {}", height);
+                        vec![ProcessingResponse::SendIoCommand(IoCommand::FetchBlock(
+                            Height::Specific(height),
+                        ))]
+                    }
+                    Height::Latest => vec![],
+                }
             }
             IoResult::ChainList(chains) => {
                 info!(
@@ -323,7 +332,15 @@ pub fn process_single_message(
                     }
                     Err(e) => {
                         error!("Failed to process block at height {}: {}", height, e);
-                        vec![]
+                        if state.chain_tip > state.last_processed_height {
+                            let next_height = state.last_processed_height + 1;
+                            warn!("Skipping bad block, fetching {}", next_height);
+                            vec![ProcessingResponse::SendIoCommand(IoCommand::FetchBlock(
+                                Height::Specific(next_height),
+                            ))]
+                        } else {
+                            vec![]
+                        }
                     }
                 }
             }
@@ -391,9 +408,7 @@ pub fn process_single_message(
                     vec![ProcessingResponse::SendIoCommand(IoCommand::FetchBlock(
                         Height::Specific(height),
                     ))]
-                } else if state.chain_tip > state.last_processed_height
-                    && old_tip == state.last_processed_height
-                {
+                } else if height > old_tip && old_tip == state.last_processed_height {
                     let next_height = state.last_processed_height + 1;
                     debug!(
                         "Chain advanced while caught up, fetching block {}",
@@ -403,7 +418,7 @@ pub fn process_single_message(
                         Height::Specific(next_height),
                     ))]
                 } else {
-                    info!("Chain tip updated to {}", height);
+                    debug!("Chain tip updated to {}", height);
                     vec![]
                 }
             }
@@ -825,5 +840,136 @@ mod tests {
         assert_eq!(*stats.get(&active_agreed).unwrap_or(&0), 1);
         assert_eq!(*stats.get(&inactive_missed).unwrap_or(&0), 1);
         assert_eq!(*stats.get(&another_inactive_missed).unwrap_or(&0), 1);
+    }
+
+    fn empty_config() -> Config {
+        Config {
+            rpc_url: "".to_string(),
+            lcd_url: "".to_string(),
+            poll_interval_seconds: 5,
+            metrics_port: 9090,
+            broadcaster: vec![],
+            chain_params: vec![],
+        }
+    }
+
+    fn has_fetch_block(responses: &[ProcessingResponse]) -> bool {
+        responses.iter().any(|r| {
+            matches!(
+                r,
+                ProcessingResponse::SendIoCommand(IoCommand::FetchBlock(_))
+            )
+        })
+    }
+
+    fn fetch_block_height(responses: &[ProcessingResponse]) -> Option<u64> {
+        responses.iter().find_map(|r| {
+            if let ProcessingResponse::SendIoCommand(IoCommand::FetchBlock(Height::Specific(h))) = r
+            {
+                Some(*h)
+            } else {
+                None
+            }
+        })
+    }
+
+    fn send(
+        state: &mut ProcessingState,
+        config: &Config,
+        result: IoResult,
+    ) -> Vec<ProcessingResponse> {
+        process_single_message(ProcessingMessage::IoResult(result), state, config)
+    }
+
+    #[test]
+    fn test_height_does_not_advance_on_fetch_error() {
+        let config = empty_config();
+        let mut state = ProcessingState::new(&config);
+
+        send(&mut state, &config, IoResult::Head(100));
+        assert_eq!(state.last_processed_height, 99);
+
+        let responses = send(
+            &mut state,
+            &config,
+            IoResult::FetchError(Height::Specific(100), "connection refused".into()),
+        );
+        assert_eq!(
+            fetch_block_height(&responses),
+            Some(100),
+            "FetchError should retry the exact same height"
+        );
+        assert_eq!(
+            state.last_processed_height, 99,
+            "height must not advance on a fetch error"
+        );
+    }
+
+    // FetchBlockResults failure silently loses poll data.
+    // The block was already processed and the chain moved on, so there's no
+    // clean way to replay.
+    #[test]
+    fn test_block_results_io_error_silently_drops_polls() {
+        let config = empty_config();
+        let mut state = ProcessingState::new(&config);
+
+        state.last_processed_height = 99;
+        state.chain_tip = 101;
+
+        let poll_data = vec![PollData {
+            kind: PollKind::GatewayTx,
+            chain: "ethereum".to_string(),
+            tx: "abc123".to_string(),
+            expiry_height: 200,
+        }];
+
+        let io_responses = process_single_io_command(
+            IoCommand::FetchBlockResults(100, poll_data),
+            "http://127.0.0.1:1",
+            "http://127.0.0.1:1",
+        );
+        assert!(
+            io_responses.is_empty(),
+            "FetchBlockResults error returns no IoResponse: poll data is lost"
+        );
+    }
+
+    #[test]
+    fn test_block_chaining_stops_at_tip() {
+        let config = empty_config();
+        let mut state = ProcessingState::new(&config);
+
+        send(&mut state, &config, IoResult::Head(100));
+        send(&mut state, &config, IoResult::Head(105));
+
+        // While behind tip, processing a block should immediately chain to the next height.
+        let behind_block = blocks::Block {
+            header: blocks::Header {
+                height: "100".to_string(),
+            },
+            data: blocks::Data { txs: vec![] },
+        };
+        let responses = send(&mut state, &config, IoResult::Block(100, behind_block));
+        assert_eq!(
+            fetch_block_height(&responses),
+            Some(101),
+            "should chain to next block while behind tip"
+        );
+
+        // When the chain is caught up, processing the tip block must not issue
+        // a FetchBlock because that would busy-loop until the next Head arrives.
+        state.last_processed_height = 104;
+        state.chain_tip = 105;
+        let tip_block = blocks::Block {
+            header: blocks::Header {
+                height: "105".to_string(),
+            },
+            data: blocks::Data { txs: vec![] },
+        };
+        let responses = send(&mut state, &config, IoResult::Block(105, tip_block));
+        assert!(
+            !has_fetch_block(&responses),
+            "should not fetch past chain tip"
+        );
     }
 }

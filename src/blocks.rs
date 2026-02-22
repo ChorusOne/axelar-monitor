@@ -505,5 +505,4 @@ mod tests {
         assert_eq!(poll_data.chain, "Ethereum");
         assert_eq!(poll_data.expiry_height, 20133866 + 15);
     }
-
 }
