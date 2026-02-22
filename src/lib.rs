@@ -319,8 +319,10 @@ pub fn process_single_message(
             state.chain_height = std::cmp::max(state.chain_height, height);
             state.last_processed_height = height;
             info!(
-                "got block height is {}, chain height is {}",
-                height, state.chain_height
+                "processing block {} (tip: {}, behind: {})",
+                height,
+                state.chain_tip,
+                state.chain_tip.saturating_sub(height)
             );
 
             let mut responses = Vec::new();
