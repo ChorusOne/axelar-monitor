@@ -15,6 +15,7 @@ pub struct Config {
     pub poll_interval_seconds: u64,
     pub metrics_port: u16,
     pub broadcaster: Vec<Broadcaster>,
+    #[serde(default)]
     pub chain_params: Vec<ChainParams>,
 }
 

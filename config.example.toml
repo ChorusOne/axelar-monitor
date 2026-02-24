@@ -10,10 +10,3 @@ address = "0123456789abcdef0123456789abcdef01234567"
 [[broadcaster]]
 name = "validator2"
 address = "abcdef0123456789abcdef0123456789abcdef01"
-
-# whatever's put here will not be fetched from the chain
-# you can leave chain_params blank at the cost of 1-2s startup time
-[[chain_params]]
-name = "arbitrum"
-revote_locking_period = 15
-voting_grace_period = 3

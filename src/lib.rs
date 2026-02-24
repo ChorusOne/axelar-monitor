@@ -12,7 +12,7 @@ use blocks::Block;
 use config::ChainParams;
 use log::{debug, error, info, warn};
 use polls::{Poll, PollData};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 #[derive(Debug, Clone, Copy)]
 pub enum Height {
@@ -112,6 +112,7 @@ pub struct ProcessingState {
     pub fetch_error_count: u64,
     pub chain_params: BTreeMap<String, ChainParams>,
     pub polls: BTreeMap<u64, Poll>,
+    pub expired_poll_ids: HashSet<u64>,
     pub chain_tip: u64,
     pub last_processed_height: u64,
     pub vote_results: BTreeMap<VoteResult, u64>,
@@ -147,6 +148,7 @@ impl ProcessingState {
             fetch_error_count: 0,
             chain_params,
             polls: BTreeMap::new(),
+            expired_poll_ids: HashSet::new(),
             chain_tip: 0,
             last_processed_height: 0,
             vote_results,
@@ -309,9 +311,7 @@ pub fn process_single_message(
             );
             let mut responses = Vec::new();
             for chain in chains {
-                if !state.chain_params.contains_key(&chain) {
-                    responses.push(IoCommand::FetchChainParams(chain));
-                }
+                responses.push(IoCommand::FetchChainParams(chain));
             }
             responses
         }
@@ -341,15 +341,32 @@ pub fn process_single_message(
                         ));
                     }
 
+                    let sender_name: BTreeMap<&str, &str> = config
+                        .broadcaster
+                        .iter()
+                        .map(|b| (b.address.as_str(), b.name.as_str()))
+                        .collect();
+
                     for vote in data.votes {
                         if let Some(poll) = state.polls.get_mut(&vote.poll_id) {
                             debug!("vote: {:?}", vote);
                             poll.votes.push(vote);
                         } else {
-                            warn!(
-                                "Got vote on poll_id={} and we don't know about it. It's fine if this program just started (~90s)",
-                                vote.poll_id
-                            );
+                            let voter = sender_name
+                                .get(vote.sender_id.as_str())
+                                .copied()
+                                .unwrap_or(&vote.sender_id);
+                            if state.expired_poll_ids.contains(&vote.poll_id) {
+                                warn!(
+                                    "vote on expired poll_id={} voter={}",
+                                    vote.poll_id, voter
+                                );
+                            } else {
+                                warn!(
+                                    "vote on unknown poll_id={} voter={} (never seen — startup noise?)",
+                                    vote.poll_id, voter
+                                );
+                            }
                         }
                     }
                     false
@@ -369,7 +386,15 @@ pub fn process_single_message(
 
             for poll_id in expiring_poll_ids {
                 if let Some(poll) = state.polls.get(&poll_id) {
+                    info!(
+                        "Poll {} expired at height {} (chain={} votes={})",
+                        poll_id,
+                        height,
+                        poll.data.chain,
+                        poll.votes.len()
+                    );
                     analyze_poll_completion(poll, config, &mut state.vote_results);
+                    state.expired_poll_ids.insert(poll_id);
                 }
             }
 

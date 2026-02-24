@@ -329,8 +329,9 @@ pub fn process_block(
     let mut poll_creations = Vec::new();
     for request in poll_requests {
         if let Some(params) = chain_params.get(&request.chain.to_lowercase()) {
-            let revote_period = params.revote_locking_period as u64;
-            let expiry_height = height + revote_period;
+            let expiry_height = height
+                + params.revote_locking_period as u64
+                + params.voting_grace_period as u64;
             poll_creations.push(request.with_expiry(expiry_height));
         } else {
             log::warn!(
@@ -413,7 +414,7 @@ mod tests {
             "4af800f430dc829f3f08dd698dccdb3aac37438288653503bb2710f6cab386ec"
         );
         assert_eq!(poll_data.chain, "Avalanche");
-        assert_eq!(poll_data.expiry_height, 20383480 + 15);
+        assert_eq!(poll_data.expiry_height, 20383480 + 15 + 3);
 
         match &poll_data.kind {
             crate::polls::PollKind::Deposit { burner_address } => {
@@ -444,7 +445,7 @@ mod tests {
             "78e2698855ffb323320c8d4ae1dc85eb3c8e10b3a75180a7aadb238f769f6e8d"
         );
         assert_eq!(transfer_key.chain, "scroll");
-        assert_eq!(transfer_key.expiry_height, 20404088 + 15);
+        assert_eq!(transfer_key.expiry_height, 20404088 + 15 + 3);
 
         let gateway_tx = result
             .poll_creations
@@ -457,7 +458,7 @@ mod tests {
             "05a409afd25c53a59f98a48721a5274a450b4ac5a2007842b4e168a111af806e"
         );
         assert_eq!(gateway_tx.chain, "scroll");
-        assert_eq!(gateway_tx.expiry_height, 20404088 + 15);
+        assert_eq!(gateway_tx.expiry_height, 20404088 + 15 + 3);
     }
 
     #[test]
@@ -500,6 +501,6 @@ mod tests {
             "05f9266335faf6ff82f98687f7f19398426faf3b1cca5ef26b235b42baa593e5"
         );
         assert_eq!(poll_data.chain, "Ethereum");
-        assert_eq!(poll_data.expiry_height, 20133866 + 15);
+        assert_eq!(poll_data.expiry_height, 20133866 + 15 + 3);
     }
 }

@@ -31,6 +31,17 @@ pub fn create_test_config() -> Config {
     create_test_config_with_broadcasters(vec![])
 }
 
+pub fn create_test_config_with_chain_params(chain_params: Vec<config::ChainParams>) -> Config {
+    Config {
+        rpc_url: "http://test".to_string(),
+        lcd_url: "http://test".to_string(),
+        poll_interval_seconds: 6,
+        metrics_port: 9090,
+        broadcaster: vec![],
+        chain_params,
+    }
+}
+
 pub fn create_test_config_with_broadcasters(broadcasters: Vec<config::Broadcaster>) -> Config {
     Config {
         rpc_url: "http://test".to_string(),

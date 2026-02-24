@@ -376,3 +376,70 @@ fn test_empty_block_no_polls_no_votes() {
 
     assert_eq!(state.polls.len(), 0, "Should have created 0 polls");
 }
+
+#[test]
+fn test_base_chain_poll_survives_to_vote_block() {
+    // Regression test for two bugs:
+    // 1. FetchChainParams was skipped for lowercase chains (e.g. "base") because the
+    //    contains_key check wasn't lowercasing, so config values (15/3) were used
+    //    instead of real LCD values (75/2), causing polls to expire 59 blocks too early.
+    // 2. voting_grace_period was ignored in expiry calculation.
+    //
+    // Poll 3047306 was created at block 24758661 on the "base" chain.
+    // Votes arrived at block 24758662. With the bugs, the poll expired at
+    // creation + 18 blocks and votes were reported as unknown.
+    let config = common::create_test_config_with_chain_params(vec![
+        axelar_monitor::config::ChainParams {
+            name: "base".to_string(),
+            revote_locking_period: 75,
+            voting_grace_period: 2,
+        },
+    ]);
+    let mut state = ProcessingState::new(&config);
+    let height = 24758661;
+
+    let io_responses = common::mock_process_io_command(
+        IoCommand::FetchBlock(Height::Specific(height), 0),
+        "base_gateway_txs",
+        height,
+    );
+
+    for msg in io_responses {
+        let cmds = process_single_message(msg, &mut state, &config);
+
+        assert!(
+            cmds.iter().any(|r| matches!(r, IoCommand::FetchBlockResults(..))),
+            "Should request BlockResults"
+        );
+
+        for cmd in cmds {
+            for msg2 in common::mock_process_io_command(cmd, "base_gateway_txs", height) {
+                process_single_message(msg2, &mut state, &config);
+            }
+        }
+    }
+
+    assert_eq!(state.polls.len(), 1, "Should have created poll 3047306");
+    assert!(state.polls.contains_key(&3047306), "Should contain poll_id 3047306");
+
+    let poll = &state.polls[&3047306];
+    assert!(matches!(poll.data.kind, polls::PollKind::GatewayTx));
+    assert_eq!(poll.data.chain, "base");
+    assert_eq!(poll.data.expiry_height, height + 75 + 2);
+
+    // Process vote block — poll must still be alive
+    let vote_height = 24758662;
+    for msg in common::mock_process_io_command(
+        IoCommand::FetchBlock(Height::Specific(vote_height), 0),
+        "base_gateway_txs",
+        vote_height,
+    ) {
+        process_single_message(msg, &mut state, &config);
+    }
+
+    let poll = &state.polls[&3047306];
+    assert!(
+        !poll.votes.is_empty(),
+        "Poll 3047306 should have votes from block 24758662"
+    );
+}
