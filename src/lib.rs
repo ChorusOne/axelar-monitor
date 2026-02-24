@@ -105,6 +105,8 @@ pub struct MetricsSnapshot {
     pub broadcaster_votes: BTreeMap<VoteResult, u64>,
     #[counter(help = "Last block height that was processed")]
     pub last_processed_height: u64,
+    #[counter(help = "Total number of blocks skipped due to fetch failures")]
+    pub skipped_blocks: u64,
 }
 
 pub struct ProcessingState {
@@ -116,6 +118,7 @@ pub struct ProcessingState {
     pub chain_tip: u64,
     pub last_processed_height: u64,
     pub vote_results: BTreeMap<VoteResult, u64>,
+    pub skipped_blocks: u64,
 }
 
 impl ProcessingState {
@@ -152,6 +155,7 @@ impl ProcessingState {
             chain_tip: 0,
             last_processed_height: 0,
             vote_results,
+            skipped_blocks: 0,
         }
     }
 
@@ -161,6 +165,7 @@ impl ProcessingState {
             fetch_error_count: self.fetch_error_count,
             broadcaster_votes: self.vote_results.clone(),
             last_processed_height: self.last_processed_height,
+            skipped_blocks: self.skipped_blocks,
         }
     }
 }
@@ -259,6 +264,7 @@ pub fn process_single_message(
                         vec![IoCommand::FetchBlock(Height::Specific(h), retries + 1)]
                     } else {
                         error!("Block {} failed {} times, skipping", h, retries + 1);
+                        state.skipped_blocks += 1;
                         state.last_processed_height = h;
                         if state.chain_tip > h {
                             vec![IoCommand::FetchBlock(Height::Specific(h + 1), 0)]
